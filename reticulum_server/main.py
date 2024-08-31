@@ -1,3 +1,36 @@
+"""
+Reticulum Telemetry Hub (RTH) - Main Execution Script
+
+This code  initializes and manages the Reticulum Telemetry Hub (RTH) as part of the RNS ecosystem.
+The hub is designed to provide TCP node functionalities, to handle telemetry data collection, message routing, and peer communication within a Reticulum network.
+
+Key Components:
+- **TelemetryController**: Manages telemetry data and command handling.
+- **AnnounceHandler**: Listens for and processes announcements from other nodes in the Reticulum network.
+- **LXMF Router**: Manages message delivery, routing, and storage within the LXMF protocol.
+
+Functionalities:
+- **One to Many Messages**: Broadcasts messages to all connected clients (experimental).
+- **Telemetry Collector**: Stores telemetry data from connected clients (currently supporting Sideband).
+- **Replication Node**: Saves messages for later delivery if the recipient is offline.
+- **Reticulum Transport**: Routes traffic, passes network announcements, and handles path requests.
+
+Usage:
+- The script loads or generates an identity for the hub, configures the LXMF router, and starts the main loop.
+- It supports manual commands to announce the hub identity or request telemetry from a specific connection.
+
+Configuration:
+- Modify `STORAGE_PATH` and `IDENTITY_PATH` to change where data is stored.
+- The `APP_NAME` constant defines the application name used in LXMF.
+
+Running the Script:
+- Execute this script directly to start the hub and enter the interactive command loop.
+- Commands include `exit` to terminate, `announce` to re-announce the hub identity, and `telemetry` to request telemetry from a connected peer.
+
+Author: FreeTAKTeam
+Date: Aug 2024 
+"""
+
 import os
 import time
 import LXMF
