@@ -3,6 +3,8 @@ tmp1/
 tmp2/
 lxmf_storage/
 .vscode/
+telemetry.db
+RTH_Store/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

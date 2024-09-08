@@ -4,8 +4,8 @@ from typing import Optional
 from sqlalchemy import ForeignKey, DateTime
 from sqlalchemy.orm import Mapped, mapped_column
 
-from lxmf_telemetry.model.persistance.sensors.sensor_enum import SID_TIME
-from lxmf_telemetry.model.persistance.sensors.sensor import Sensor
+from reticulum_telemetry_hub.lxmf_telemetry.model.persistance.sensors.sensor_enum import SID_TIME
+from reticulum_telemetry_hub.lxmf_telemetry.model.persistance.sensors.sensor import Sensor
 
 class Time(Sensor):
     __tablename__ = 'Time'

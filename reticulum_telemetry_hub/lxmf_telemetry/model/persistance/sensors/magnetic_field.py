@@ -1,5 +1,5 @@
 from sqlalchemy import Column
-from lxmf_telemetry.model.persistance.sensors.sensor import Sensor
+from reticulum_telemetry_hub.lxmf_telemetry.model.persistance.sensors.sensor import Sensor
 from .sensor_enum import SID_MAGNETIC_FIELD
 import struct
 import RNS

@@ -3,11 +3,11 @@ from datetime import datetime
 import LXMF
 import RNS
 from msgpack import packb, unpackb
-from lxmf_telemetry.model.persistance import Base
-from lxmf_telemetry.model.persistance.sensors.sensor import Sensor
-from lxmf_telemetry.model.persistance.telemeter import Telemeter
+from reticulum_telemetry_hub.lxmf_telemetry.model.persistance import Base
+from reticulum_telemetry_hub.lxmf_telemetry.model.persistance.sensors.sensor import Sensor
+from reticulum_telemetry_hub.lxmf_telemetry.model.persistance.telemeter import Telemeter
 
-from lxmf_telemetry.model.persistance.sensors.sensor_mapping import sid_mapping
+from reticulum_telemetry_hub.lxmf_telemetry.model.persistance.sensors.sensor_mapping import sid_mapping
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session, joinedload
 

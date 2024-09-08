@@ -1,17 +1,19 @@
 [tool.poetry]
-name = "reticulum-server"
-version = "0.1.0"
+name = "ReticulumTelemetryHub"
+version = "0.1.2"
 description = ""
-authors = ["naman108 <natha.paquette@gmail.com>"]
+authors = ["naman108"]
 readme = "README.md"
+packages = [
+    { include = "reticulum_telemetry_hub" },
+]
 
 [tool.poetry.dependencies]
-python = "^3.12"
+python = "^3.10"
 lxmf = "^0.4.4"
 msgpack = "^1.0.8"
 sqlalchemy = "^2.0.32"
 pytest = "^8.3.2"
-
 
 [build-system]
 requires = ["poetry-core"]

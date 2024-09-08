@@ -1,4 +1,4 @@
-from lxmf_telemetry.telemetry_controller import TelemetryController
+from reticulum_telemetry_hub.lxmf_telemetry.telemetry_controller import TelemetryController
 
 def test_deserialize_lxmf():
     with open('sample.bin', 'rb') as f:
