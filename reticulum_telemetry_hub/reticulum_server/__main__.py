@@ -287,7 +287,10 @@ class ReticulumTelemetryHub:
                         break
                 if not found:
                     print("Connection not found")
-
+    def headless_loop(self):
+        while True:
+            self.my_lxmf_dest.announce()
+            time.sleep(60)
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
@@ -309,3 +312,5 @@ if __name__ == "__main__":
 
     if not args.headless:
         reticulum_server.interactive_loop()
+    else:
+        reticulum_server.headless_loop()
