@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 
 use r3akt_protocol::{Ack, Command, Destination, NodeId, Payload, ProtocolEnvelope, Topic};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
 mod fields;
@@ -532,11 +532,7 @@ pub fn encode_commands(commands: &[MissionCommandEnvelope]) -> Result<Vec<u8>, R
 }
 
 pub fn decode_commands(bytes: &[u8]) -> Result<Vec<MissionCommandEnvelope>, RchProfileError> {
-    let mut fields: BTreeMap<i64, Vec<MissionCommandEnvelope>> =
-        rmp_serde::from_slice(bytes).map_err(|error| RchProfileError::Decode(error.to_string()))?;
-    fields
-        .remove(&FIELD_COMMANDS)
-        .ok_or(RchProfileError::MissingField(FIELD_COMMANDS))
+    decode_field(bytes, FIELD_COMMANDS)
 }
 
 pub fn encode_results(results: &[CommandResultEnvelope]) -> Result<Vec<u8>, RchProfileError> {
@@ -545,12 +541,7 @@ pub fn encode_results(results: &[CommandResultEnvelope]) -> Result<Vec<u8>, RchP
 }
 
 pub fn decode_results(bytes: &[u8]) -> Result<Vec<CommandResultEnvelope>, RchProfileError> {
-    let mut fields: BTreeMap<i64, OneOrMany<CommandResultEnvelope>> =
-        rmp_serde::from_slice(bytes).map_err(|error| RchProfileError::Decode(error.to_string()))?;
-    Ok(fields
-        .remove(&FIELD_RESULTS)
-        .ok_or(RchProfileError::MissingField(FIELD_RESULTS))?
-        .into_vec())
+    Ok(decode_field::<OneOrMany<CommandResultEnvelope>>(bytes, FIELD_RESULTS)?.into_vec())
 }
 
 pub fn encode_events(events: &[EventEnvelope]) -> Result<Vec<u8>, RchProfileError> {
@@ -559,12 +550,16 @@ pub fn encode_events(events: &[EventEnvelope]) -> Result<Vec<u8>, RchProfileErro
 }
 
 pub fn decode_events(bytes: &[u8]) -> Result<Vec<EventEnvelope>, RchProfileError> {
-    let mut fields: BTreeMap<i64, OneOrMany<EventEnvelope>> =
+    Ok(decode_field::<OneOrMany<EventEnvelope>>(bytes, FIELD_EVENT)?.into_vec())
+}
+
+fn decode_field<T: DeserializeOwned>(bytes: &[u8], field: i64) -> Result<T, RchProfileError> {
+    let mut fields: BTreeMap<i64, serde_json::Value> =
         rmp_serde::from_slice(bytes).map_err(|error| RchProfileError::Decode(error.to_string()))?;
-    Ok(fields
-        .remove(&FIELD_EVENT)
-        .ok_or(RchProfileError::MissingField(FIELD_EVENT))?
-        .into_vec())
+    let value = fields
+        .remove(&field)
+        .ok_or(RchProfileError::MissingField(field))?;
+    serde_json::from_value(value).map_err(|error| RchProfileError::Decode(error.to_string()))
 }
 
 pub fn ack_to_result(
@@ -668,6 +663,32 @@ mod tests {
 
         let result = ack_to_result(&envelope).expect("ack result");
         let bytes = encode_results(std::slice::from_ref(&result)).expect("encode");
+
+        assert_eq!(decode_results(&bytes).expect("decode"), vec![result]);
+    }
+
+    #[test]
+    fn team_scoped_result_field_ignores_group_metadata() {
+        let result = CommandResultEnvelope {
+            command_id: "cmd-team-result".to_string(),
+            status: CommandResultStatus::Completed,
+            detail: None,
+            reason_code: None,
+            reason: None,
+            required_capabilities: Vec::new(),
+            accepted_at: None,
+            by_identity: None,
+            correlation_id: Some("corr-team-result".to_string()),
+            result: serde_json::json!({ "ok": true }),
+        };
+        let fields = BTreeMap::from([
+            (FIELD_RESULTS, serde_json::json!([result.clone()])),
+            (
+                FIELD_GROUP,
+                serde_json::json!("d6b6e188b910d6bdd24d04b7a7ec5444"),
+            ),
+        ]);
+        let bytes = rmp_serde::to_vec_named(&fields).expect("encode");
 
         assert_eq!(decode_results(&bytes).expect("decode"), vec![result]);
     }

@@ -4612,6 +4612,9 @@ impl RchCore {
                 format!("Unsupported REM command '{}'", command.command_type),
             ))];
         }
+        if let Some(rejection) = self.rem_registry_team_scope_rejection(command) {
+            return vec![rejection];
+        }
         let Some(source_identity) = normalize_hash(Some(&command.source.rns_identity)) else {
             return vec![MissionSyncResponse::rem_results(Self::rejected_result(
                 command,

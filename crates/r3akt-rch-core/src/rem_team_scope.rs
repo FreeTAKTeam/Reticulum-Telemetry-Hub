@@ -15,6 +15,18 @@ impl RchCore {
         )))
     }
 
+    pub(super) fn rem_registry_team_scope_rejection(
+        &self,
+        command: &MissionCommandEnvelope,
+    ) -> Option<MissionSyncResponse> {
+        let (reason_code, reason) = self.validate_rem_team_scope(command).err()?;
+        Some(MissionSyncResponse::rem_results(Self::rejected_result(
+            command,
+            reason_code,
+            reason,
+        )))
+    }
+
     fn validate_rem_team_scope(
         &self,
         command: &MissionCommandEnvelope,

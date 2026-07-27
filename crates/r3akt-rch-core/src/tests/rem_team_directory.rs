@@ -210,6 +210,17 @@ fn rem_team_peer_registry_returns_only_recent_shared_team_rem_destinations() {
             .is_empty()
     );
 
+    let denied_registry = core.handle_mission_sync_command(&command_from(
+        CALLER_DESTINATION,
+        "rem.registry.team_peers.list",
+        json!({ "_rem_team_uid": BLUE_TEAM_UID }),
+    ));
+    let denied_registry_result = denied_registry[0]
+        .results_field()
+        .expect("REM team rejection");
+    assert_eq!(denied_registry_result["status"], "rejected");
+    assert_eq!(denied_registry_result["reason_code"], "unauthorized_team");
+
     let denied = core.handle_mission_sync_command(&command_from(
         CALLER_DESTINATION,
         "mission.registry.eam.list",
