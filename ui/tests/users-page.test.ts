@@ -39,6 +39,16 @@ const clientAlpha = {
   is_rem_capable: false
 };
 
+const clientRem = {
+  identity: "client-rem",
+  display_name: "Rescue Mobile",
+  last_seen: "2026-06-23T06:02:00Z",
+  metadata: {},
+  client_type: "rem",
+  announce_capabilities: ["r3akt", "emergencymessages"],
+  is_rem_capable: true
+};
+
 const identityAlpha = {
   Identity: "client-alpha",
   DisplayName: "Alpha Client",
@@ -126,6 +136,18 @@ const clickCardButton = async (cardText: string, label: string) => {
   await waitForUi();
 };
 
+const clickClientTypeFilter = async (groupLabel: string, label: string) => {
+  const group = document.querySelector(`[aria-label="${groupLabel}"]`);
+  const button = Array.from(group?.querySelectorAll("button") ?? []).find(
+    (entry) => (entry.textContent ?? "").trim() === label
+  );
+  if (!(button instanceof HTMLButtonElement)) {
+    throw new Error(`Client type filter not found: ${groupLabel} / ${label}`);
+  }
+  button.click();
+  await waitForUi();
+};
+
 const mountPage = async (): Promise<MountedPage> => {
   const root = document.createElement("div");
   document.body.appendChild(root);
@@ -156,7 +178,7 @@ const currentIdentities = () => [identityAlpha, identityBravo];
 const setupApiMocks = () => {
   getMock.mockImplementation((path: string) => {
     if (path === "/Client") {
-      return Promise.resolve([clientAlpha]);
+      return Promise.resolve([clientAlpha, clientRem]);
     }
     if (path === "/Identities") {
       return Promise.resolve(currentIdentities());
@@ -284,5 +306,28 @@ describe("users page", () => {
     expect(text()).toContain("Bravo Route");
     expect(text()).toContain("route-bravo");
     expect(text()).toContain("Joined");
+  });
+
+  it("filters users and identity announces by client type", async () => {
+    page = await mountPage();
+
+    expect(text()).toContain("Alpha Client");
+    expect(text()).toContain("Rescue Mobile");
+
+    await clickClientTypeFilter("Filter users by client type", "REM");
+
+    expect(text()).not.toContain("Alpha Client");
+    expect(text()).toContain("Rescue Mobile");
+
+    await clickButton("Identities", 1);
+    await clickClientTypeFilter("Filter announces by client type", "REM");
+
+    expect(text()).not.toContain("Alpha Client");
+    expect(text()).toContain("Bravo Identity");
+
+    await clickClientTypeFilter("Filter announces by client type", "LXMF");
+
+    expect(text()).toContain("Alpha Client");
+    expect(text()).not.toContain("Bravo Identity");
   });
 });

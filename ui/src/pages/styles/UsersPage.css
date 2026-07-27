@@ -80,6 +80,48 @@
   color: rgba(209, 251, 255, 0.4);
 }
 
+.client-type-filter {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  margin-top: 8px;
+  padding: 4px;
+  border: 1px solid rgba(55, 242, 255, 0.22);
+  border-radius: 10px;
+  background: rgba(3, 11, 18, 0.72);
+}
+
+.client-type-filter__option {
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 6px 4px;
+  background: transparent;
+  color: rgba(209, 251, 255, 0.52);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.client-type-filter__option:hover {
+  color: rgba(223, 252, 255, 0.9);
+  border-color: rgba(55, 242, 255, 0.24);
+}
+
+.client-type-filter__option:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
+
+.client-type-filter__option.active {
+  border-color: rgba(55, 242, 255, 0.58);
+  background: rgba(55, 242, 255, 0.13);
+  color: var(--neon);
+  box-shadow: inset 0 0 12px rgba(55, 242, 255, 0.08), 0 0 10px rgba(55, 242, 255, 0.12);
+}
+
 .tree-note {
   margin-top: 14px;
   padding: 12px;

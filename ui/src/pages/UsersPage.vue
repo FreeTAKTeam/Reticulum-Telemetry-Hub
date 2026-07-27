@@ -58,9 +58,35 @@
 
           <div v-if="activeTab === 'clients'" class="tree-search">
             <input v-model="clientFilter" type="text" placeholder="Filter users by name/hash" />
+            <div class="client-type-filter" role="group" aria-label="Filter users by client type">
+              <button
+                v-for="option in clientTypeFilterOptions"
+                :key="`client-${option.value}`"
+                class="client-type-filter__option"
+                :class="{ active: clientTypeFilter === option.value }"
+                type="button"
+                :aria-pressed="clientTypeFilter === option.value"
+                @click="clientTypeFilter = option.value"
+              >
+                {{ option.label }}
+              </button>
+            </div>
           </div>
           <div v-else-if="activeTab === 'identities'" class="tree-search">
             <input v-model="identityFilter" type="text" placeholder="Filter identities by name/hash" />
+            <div class="client-type-filter" role="group" aria-label="Filter announces by client type">
+              <button
+                v-for="option in clientTypeFilterOptions"
+                :key="`identity-${option.value}`"
+                class="client-type-filter__option"
+                :class="{ active: identityTypeFilter === option.value }"
+                type="button"
+                :aria-pressed="identityTypeFilter === option.value"
+                @click="identityTypeFilter = option.value"
+              >
+                {{ option.label }}
+              </button>
+            </div>
           </div>
           <div v-else-if="activeTab === 'rem-peers'" class="tree-search">
             <input v-model="remPeerFilter" type="text" placeholder="Filter REM peers by name/hash/mode" />
@@ -520,6 +546,13 @@ import { resolveIdentityLabel, shortHash } from "../utils/identity";
 import { resolveTeamMemberPrimaryLabel } from "../utils/team-members";
 
 type ActiveTab = "clients" | "identities" | "rem-peers" | "routing" | "teams" | "team-members" | "rights";
+type ClientTypeFilter = "all" | "rem" | "generic_lxmf";
+
+const clientTypeFilterOptions: { label: string; value: ClientTypeFilter }[] = [
+  { label: "All", value: "all" },
+  { label: "REM", value: "rem" },
+  { label: "LXMF", value: "generic_lxmf" }
+];
 
 const toStringList = (value: unknown): string[] =>
   Array.isArray(value)
@@ -620,6 +653,8 @@ const teamsPageSize = 9;
 const teamMembersPageSize = 9;
 const identityFilter = ref("");
 const clientFilter = ref("");
+const clientTypeFilter = ref<ClientTypeFilter>("all");
+const identityTypeFilter = ref<ClientTypeFilter>("all");
 const remPeerFilter = ref("");
 const teamFilter = ref("");
 const teamMemberFilter = ref("");
@@ -691,13 +726,12 @@ const activeTabTitle = computed(() => {
 
 const filteredClients = computed(() => {
   const filter = clientFilter.value.trim().toLowerCase();
-  if (!filter) {
-    return usersStore.clients;
-  }
   return usersStore.clients.filter((client) => {
     const displayName = resolveClientDisplayName(client) ?? "";
     const id = client.id ?? "";
-    return displayName.toLowerCase().includes(filter) || id.toLowerCase().includes(filter);
+    const matchesText =
+      !filter || displayName.toLowerCase().includes(filter) || id.toLowerCase().includes(filter);
+    return matchesText && matchesClientType(client.client_type, client.is_rem_capable, clientTypeFilter.value);
   });
 });
 
@@ -726,20 +760,18 @@ const pagedClients = computed(() => {
 
 const filteredIdentities = computed(() => {
   const filter = identityFilter.value.trim().toLowerCase();
-  if (!filter) {
-    return usersStore.identities;
-  }
   return usersStore.identities.filter((identity) => {
     const displayName = identity.display_name ?? "";
     const id = identity.id ?? "";
     const announceSource = identity.announce_source ?? "";
     const announceDestination = identity.announce_destination_hash ?? "";
-    return (
+    const matchesText =
+      !filter ||
       displayName.toLowerCase().includes(filter) ||
       id.toLowerCase().includes(filter) ||
       announceSource.toLowerCase().includes(filter) ||
-      announceDestination.toLowerCase().includes(filter)
-    );
+      announceDestination.toLowerCase().includes(filter);
+    return matchesText && matchesClientType(identity.client_type, identity.is_rem_capable, identityTypeFilter.value);
   });
 });
 
@@ -1204,6 +1236,18 @@ const clientTypeLabel = (clientType?: string, isRemCapable?: boolean): string =>
   return isRemCapable || clientType === "rem" ? "REM Client" : "Generic LXMF";
 };
 
+const matchesClientType = (
+  clientType: string | undefined,
+  isRemCapable: boolean | undefined,
+  filter: ClientTypeFilter
+): boolean => {
+  if (filter === "all") {
+    return true;
+  }
+  const resolvedType = isRemCapable || clientType?.trim().toLowerCase() === "rem" ? "rem" : "generic_lxmf";
+  return resolvedType === filter;
+};
+
 type IdentityWithAnnounce = {
   id?: string;
   announce_destination_hash?: string;
@@ -1644,7 +1688,7 @@ watch(clientPageCount, (count) => {
   }
 });
 
-watch(clientFilter, () => {
+watch([clientFilter, clientTypeFilter], () => {
   clientsPage.value = 1;
 });
 
@@ -1654,7 +1698,7 @@ watch(identityPageCount, (count) => {
   }
 });
 
-watch(identityFilter, () => {
+watch([identityFilter, identityTypeFilter], () => {
   identitiesPage.value = 1;
 });
 
