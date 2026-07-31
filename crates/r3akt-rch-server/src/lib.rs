@@ -38,6 +38,11 @@
 )]
 
 mod auth;
+mod rem_team_routing;
+
+use rem_team_routing::{
+    fanout_mission_sync_response_to_team, send_mission_sync_response_to_source,
+};
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::future::pending;
@@ -5071,6 +5076,16 @@ fn process_reticulumd_inbound_mission_sync_command(
     };
     let mut core = RchCore::from_snapshot(snapshot.clone())
         .map_err(|error| ApiError::Internal(error.to_string()))?;
+    let team_uid = command
+        .args
+        .get("_rem_team_uid")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let team_destinations = team_uid.as_deref().map(|team_uid| {
+        core.rem_team_routing_destinations(envelope.source.to_string().as_str(), team_uid)
+    });
     let responses = if checklist {
         core.handle_checklist_sync_command(&mission_command)
     } else {
@@ -5095,8 +5110,14 @@ fn process_reticulumd_inbound_mission_sync_command(
             envelope.topic.to_string().as_str(),
             command,
             &response,
+            team_uid.as_deref(),
         )?;
-        fanout_mission_sync_response_to_team(state, &response)?;
+        fanout_mission_sync_response_to_team(
+            state,
+            &response,
+            team_uid.as_deref(),
+            team_destinations.as_deref(),
+        )?;
     }
     Ok(())
 }
@@ -5123,71 +5144,6 @@ fn mission_sync_command_from_reticulumd(
         correlation_id: command.correlation_id.clone(),
         topics: vec![envelope.topic.to_string()],
     }
-}
-
-fn send_mission_sync_response_to_source(
-    state: &AppState,
-    source: &str,
-    topic: &str,
-    command: &r3akt_protocol::Command,
-    response: &r3akt_rch_core::MissionSyncResponse,
-) -> Result<OutboundMessageRecord, ApiError> {
-    record_outbound_message_with_metadata(
-        state,
-        response.content.as_str(),
-        None,
-        Some(source.to_string()),
-        Vec::new(),
-        true,
-        json!({
-            "reticulumd_inbound_command_reply": true,
-            "source": "r3akt-rch-server",
-            "direction": "outbound",
-            "inbound_source": source,
-            "inbound_topic": topic,
-            "command": command.name,
-            "correlation_id": command.correlation_id,
-            "lxmf_fields": response.fields,
-        }),
-    )
-}
-
-fn fanout_mission_sync_response_to_team(
-    state: &AppState,
-    response: &r3akt_rch_core::MissionSyncResponse,
-) -> Result<(), ApiError> {
-    let Some(event) = response.event_field() else {
-        return Ok(());
-    };
-    let Some(mission_uid) = mission_uid_from_response_fields(response) else {
-        return Ok(());
-    };
-    let destinations = mission_team_member_destinations(state, mission_uid.as_str())?;
-    if destinations.is_empty() {
-        return Ok(());
-    }
-    let event_type = event
-        .get("event_type")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    for destination in destinations {
-        record_outbound_message_with_metadata(
-            state,
-            format!("r3akt mission event {event_type}").trim(),
-            None,
-            Some(destination),
-            Vec::new(),
-            true,
-            json!({
-                "reticulumd_inbound_mission_team_fanout": true,
-                "source": "r3akt-rch-server",
-                "direction": "outbound",
-                "mission_uid": mission_uid,
-                "lxmf_fields": response.fields,
-            }),
-        )?;
-    }
-    Ok(())
 }
 
 fn mission_uid_from_response_fields(
@@ -13013,7 +12969,9 @@ fn supported_commands_document() -> String {
             .to_string(),
         "`rem.registry.peers.list` returns active REM peers and `effective_connected_mode`."
             .to_string(),
-        "`rem.registry.team_peers.list` returns recent REM-capable peers in teams shared with the requesting REM identity."
+        "`rem.registry.team_peers.list` returns a versioned canonical TEAM directory, caller memberships, durable REM-member destinations, and legacy recent `items`."
+            .to_string(),
+        "Team-scoped REM commands use LXMF `FIELD_GROUP` (`0x0B`); RCH validates caller membership and constrains Connected-mode fanout to that TEAM."
             .to_string(),
         String::new(),
     ]);

@@ -112,17 +112,47 @@ normal mission-style command envelope in `FIELD_COMMANDS` (`0x09`):
 ```
 
 RCH requires the caller to have REM announce capabilities and to be linked to a
-TEAM member. It returns only recent, active, non-moderated REM destinations from
-teams shared with that member. Primary TEAM member identities and explicitly
-linked client identities are both eligible. The caller's own identity is
-excluded.
+TEAM member. Version 2 returns canonical shared TEAM records, caller
+memberships, and durable REM-member destinations, including members whose last
+validated announce is now offline. Non-REM, unverified, banned, blackholed, and
+self entries are excluded. Primary TEAM member identities and explicitly linked
+client identities are both eligible. The legacy `items` array remains recent
+and active only so older REM clients retain their existing behavior.
 
 The terminal `FIELD_RESULTS` (`0x0a`) result payload is:
 
 ```json
 {
+  "schema_version": 2,
   "scope": "shared_teams",
   "effective_connected_mode": false,
+  "teams": [
+    {
+      "uid": "d6b6e188b910d6bdd24d04b7a7ec5444",
+      "color": "YELLOW",
+      "team_name": "Yellow"
+    }
+  ],
+  "caller_memberships": [
+    {
+      "team_uid": "d6b6e188b910d6bdd24d04b7a7ec5444",
+      "team_member_uid": "<caller TEAM member UID>"
+    }
+  ],
+  "members": [
+    {
+      "team_uid": "d6b6e188b910d6bdd24d04b7a7ec5444",
+      "team_member_uid": "<peer TEAM member UID>",
+      "identity": "<TEAM member identity>",
+      "destination_hash": "<last validated lxmf.delivery destination>",
+      "display_name": "Field Phone",
+      "announce_capabilities": ["r3akt", "emergencymessages", "telemetry"],
+      "client_type": "rem",
+      "registered_mode": "semi_autonomous",
+      "last_seen": "2026-07-16T12:00:00Z",
+      "status": "offline"
+    }
+  ],
   "items": [
     {
       "identity": "<TEAM member identity>",
@@ -137,6 +167,12 @@ The terminal `FIELD_RESULTS` (`0x0a`) result payload is:
   ]
 }
 ```
+
+REM team-scoped traffic carries the canonical TEAM UID in LXMF `FIELD_GROUP`
+(`0x0B`). RCH rejects unknown TEAM UIDs and callers that do not belong to the
+requested TEAM. In Connected mode, RCH fanout is restricted to the validated
+TEAM's durable REM destinations. Commands without `FIELD_GROUP` remain accepted
+for compatibility with older REM clients.
 
 `rem.registry.peers.list` remains available as the legacy unscoped REM registry
 command, and `GET /api/rem/peers` remains the operator-facing HTTP registry.

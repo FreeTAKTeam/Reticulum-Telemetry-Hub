@@ -2,6 +2,8 @@ use super::*;
 
 #[tokio::test]
 async fn reticulumd_inbound_team_peer_directory_returns_only_shared_team_rem_peers() {
+    const YELLOW_TEAM_UID: &str = "d6b6e188b910d6bdd24d04b7a7ec5444";
+    const BLUE_TEAM_UID: &str = "43341e5c822d99857fa6e8641f2ca9c0";
     const CALLER_IDENTITY: &str = "11111111111111111111111111111111";
     const CALLER_DESTINATION: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const TEAMMATE_IDENTITY: &str = "22222222222222222222222222222222";
@@ -21,16 +23,16 @@ async fn reticulumd_inbound_team_peer_directory_returns_only_shared_team_rem_pee
         }
     };
     let mut core = RchCore::new();
-    for (uid, name) in [("team-alpha", "Alpha"), ("team-bravo", "Bravo")] {
+    for (uid, name) in [(YELLOW_TEAM_UID, "Yellow"), (BLUE_TEAM_UID, "Blue")] {
         core.handle_command(&setup_command(
             "mission.registry.team.upsert",
             json!({ "uid": uid, "team_name": name }),
         ));
     }
     for (uid, team_uid, identity) in [
-        ("member-caller", "team-alpha", CALLER_IDENTITY),
-        ("member-teammate", "team-alpha", TEAMMATE_IDENTITY),
-        ("member-outsider", "team-bravo", OUTSIDER_IDENTITY),
+        ("member-caller", YELLOW_TEAM_UID, CALLER_IDENTITY),
+        ("member-teammate", YELLOW_TEAM_UID, TEAMMATE_IDENTITY),
+        ("member-outsider", BLUE_TEAM_UID, OUTSIDER_IDENTITY),
     ] {
         core.handle_command(&setup_command(
             "mission.registry.team_member.upsert",
@@ -132,6 +134,15 @@ async fn reticulumd_inbound_team_peer_directory_returns_only_shared_team_rem_pee
         .expect("result reply");
     assert_eq!(result["fields"]["10"]["command_id"], "hub-directory-123");
     assert_eq!(result["fields"]["10"]["result"]["scope"], "shared_teams");
+    assert_eq!(result["fields"]["10"]["result"]["schema_version"], 2);
+    assert_eq!(
+        result["fields"]["10"]["result"]["caller_memberships"][0]["team_uid"],
+        YELLOW_TEAM_UID
+    );
+    assert_eq!(
+        result["fields"]["10"]["result"]["members"][0]["team_uid"],
+        YELLOW_TEAM_UID
+    );
     let items = result["fields"]["10"]["result"]["items"]
         .as_array()
         .expect("items");

@@ -12,12 +12,11 @@
 use std::collections::BTreeMap;
 
 use r3akt_protocol::{Ack, Command, Destination, NodeId, Payload, ProtocolEnvelope, Topic};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
-pub const FIELD_COMMANDS: i64 = 0x09;
-pub const FIELD_RESULTS: i64 = 0x0A;
-pub const FIELD_EVENT: i64 = 0x0D;
+mod fields;
+pub use fields::{FIELD_COMMANDS, FIELD_EVENT, FIELD_GROUP, FIELD_RESULTS};
 const MECP_PREFIX: &str = "MECP/";
 
 #[derive(Debug, Error)]
@@ -533,11 +532,7 @@ pub fn encode_commands(commands: &[MissionCommandEnvelope]) -> Result<Vec<u8>, R
 }
 
 pub fn decode_commands(bytes: &[u8]) -> Result<Vec<MissionCommandEnvelope>, RchProfileError> {
-    let mut fields: BTreeMap<i64, Vec<MissionCommandEnvelope>> =
-        rmp_serde::from_slice(bytes).map_err(|error| RchProfileError::Decode(error.to_string()))?;
-    fields
-        .remove(&FIELD_COMMANDS)
-        .ok_or(RchProfileError::MissingField(FIELD_COMMANDS))
+    decode_field(bytes, FIELD_COMMANDS)
 }
 
 pub fn encode_results(results: &[CommandResultEnvelope]) -> Result<Vec<u8>, RchProfileError> {
@@ -546,12 +541,7 @@ pub fn encode_results(results: &[CommandResultEnvelope]) -> Result<Vec<u8>, RchP
 }
 
 pub fn decode_results(bytes: &[u8]) -> Result<Vec<CommandResultEnvelope>, RchProfileError> {
-    let mut fields: BTreeMap<i64, OneOrMany<CommandResultEnvelope>> =
-        rmp_serde::from_slice(bytes).map_err(|error| RchProfileError::Decode(error.to_string()))?;
-    Ok(fields
-        .remove(&FIELD_RESULTS)
-        .ok_or(RchProfileError::MissingField(FIELD_RESULTS))?
-        .into_vec())
+    Ok(decode_field::<OneOrMany<CommandResultEnvelope>>(bytes, FIELD_RESULTS)?.into_vec())
 }
 
 pub fn encode_events(events: &[EventEnvelope]) -> Result<Vec<u8>, RchProfileError> {
@@ -560,12 +550,16 @@ pub fn encode_events(events: &[EventEnvelope]) -> Result<Vec<u8>, RchProfileErro
 }
 
 pub fn decode_events(bytes: &[u8]) -> Result<Vec<EventEnvelope>, RchProfileError> {
-    let mut fields: BTreeMap<i64, OneOrMany<EventEnvelope>> =
+    Ok(decode_field::<OneOrMany<EventEnvelope>>(bytes, FIELD_EVENT)?.into_vec())
+}
+
+fn decode_field<T: DeserializeOwned>(bytes: &[u8], field: i64) -> Result<T, RchProfileError> {
+    let mut fields: BTreeMap<i64, serde_json::Value> =
         rmp_serde::from_slice(bytes).map_err(|error| RchProfileError::Decode(error.to_string()))?;
-    Ok(fields
-        .remove(&FIELD_EVENT)
-        .ok_or(RchProfileError::MissingField(FIELD_EVENT))?
-        .into_vec())
+    let value = fields
+        .remove(&field)
+        .ok_or(RchProfileError::MissingField(field))?;
+    serde_json::from_value(value).map_err(|error| RchProfileError::Decode(error.to_string()))
 }
 
 pub fn ack_to_result(
