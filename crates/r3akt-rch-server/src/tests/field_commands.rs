@@ -5,6 +5,40 @@ use serde_json::{Value, json};
 use std::time::Duration;
 use uuid::Uuid;
 
+fn inbound_event(
+    event_id: &str,
+    message_id: &str,
+    source: &str,
+    fields: Value,
+    content: &str,
+) -> r3akt_transport_rns::ReticulumdEventRecord {
+    r3akt_transport_rns::ReticulumdEventRecord {
+        event_id: event_id.to_string(),
+        runtime_id: None,
+        stream_id: None,
+        seq_no: None,
+        contract_version: None,
+        ts_ms: None,
+        event_type: "inbound".to_string(),
+        severity: None,
+        source_component: None,
+        operation_id: None,
+        message_id: Some(message_id.to_string()),
+        peer_id: None,
+        correlation_id: None,
+        trace_id: None,
+        payload: json!({
+            "message": {
+                "id": message_id,
+                "source": source,
+                "destination": "hub-source",
+                "content": content,
+                "fields": fields,
+            }
+        }),
+    }
+}
+
 #[test]
 fn command_docs_show_legacy_and_mission_field_shapes() {
     let help = crate::command_help_text();
@@ -136,6 +170,126 @@ fn list_messages_mission_style_join_still_dispatches() {
     let params = request.params.expect("params");
     assert_eq!(params["destination"], source);
     assert_eq!(params["content"], "joined");
+}
+
+#[test]
+fn malformed_event_is_quarantined_and_cursor_advances_to_later_messages() {
+    let db_path = std::env::temp_dir().join(format!(
+        "r3akt-rch-malformed-field-command-event-{}.db",
+        Uuid::new_v4()
+    ));
+    let state = crate::AppState::from_sqlite_path(&db_path).expect("state");
+    let report = crate::process_reticulumd_event_batch(
+        &state,
+        "hub-source",
+        r3akt_transport_rns::ReticulumdEventBatch {
+            events: vec![
+                inbound_event(
+                    "quarantine-event-1",
+                    "quarantine-message-1",
+                    "peer-field-command",
+                    json!({"9": [{"not_a_selector": "join"}]}),
+                    "",
+                ),
+                inbound_event(
+                    "after-quarantine-event-1",
+                    "after-quarantine-message-1",
+                    "peer-after-quarantine",
+                    json!({}),
+                    "after quarantine",
+                ),
+            ],
+            next_cursor: Some("stream:2".to_string()),
+            dropped_count: 0,
+            snapshot_high_watermark_seq_no: None,
+        },
+    )
+    .expect("process event batch");
+
+    assert_eq!(report.next_cursor.as_deref(), Some("stream:2"));
+    assert_eq!(
+        crate::load_reticulumd_event_cursor(&state).as_deref(),
+        Some("stream:2")
+    );
+    assert!(
+        state
+            .messages
+            .read()
+            .expect("messages")
+            .iter()
+            .any(|message| message.content == "after quarantine")
+    );
+    let diagnostics = crate::runtime_diagnostics_payload(&state).expect("diagnostics");
+    assert_eq!(diagnostics["reticulumd_inbound"]["quarantined_total"], 1);
+    assert!(
+        diagnostics["reticulumd_inbound"]["last_quarantine_error"]
+            .as_str()
+            .is_some_and(|error| error.contains("quarantine-message-1"))
+    );
+    assert!(
+        state
+            .system_events
+            .read()
+            .expect("system events")
+            .iter()
+            .any(|event| event.event_type == "reticulumd_inbound_message_quarantined")
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn malformed_list_message_is_quarantined_and_not_retried() {
+    let db_path = std::env::temp_dir().join(format!(
+        "r3akt-rch-malformed-field-command-list-{}.db",
+        Uuid::new_v4()
+    ));
+    let state = crate::AppState::from_sqlite_path(&db_path).expect("state");
+    let result = json!({
+        "messages": [
+            {
+                "id": "quarantine-list-1",
+                "direction": "in",
+                "source": "peer-field-command",
+                "destination": "hub-source",
+                "content": "",
+                "fields": {"9": [{"not_a_selector": "join"}]}
+            },
+            {
+                "id": "after-quarantine-list-1",
+                "direction": "in",
+                "source": "peer-after-quarantine",
+                "destination": "hub-source",
+                "content": "after quarantine",
+                "fields": {}
+            }
+        ]
+    });
+
+    assert_eq!(
+        crate::process_reticulumd_list_messages_result(&state, "hub-source", &result)
+            .expect("first list import"),
+        1
+    );
+    assert_eq!(
+        crate::process_reticulumd_list_messages_result(&state, "hub-source", &result)
+            .expect("second list import"),
+        0
+    );
+    let diagnostics = crate::runtime_diagnostics_payload(&state).expect("diagnostics");
+    assert_eq!(diagnostics["reticulumd_inbound"]["quarantined_total"], 1);
+    assert_eq!(
+        state
+            .system_events
+            .read()
+            .expect("system events")
+            .iter()
+            .filter(|event| event.event_type == "reticulumd_inbound_message_quarantined")
+            .count(),
+        1
+    );
+
+    let _ = std::fs::remove_file(db_path);
 }
 
 #[tokio::test]

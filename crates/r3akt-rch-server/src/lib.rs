@@ -39,6 +39,7 @@
 
 mod auth;
 mod rem_team_routing;
+mod reticulumd_inbound;
 
 use rem_team_routing::{
     fanout_mission_sync_response_to_team, send_mission_sync_response_to_source,
@@ -96,7 +97,7 @@ use r3akt_transport_rns::{
     LxmfSdkSharedOutboundBatch, LxmfSdkSharedPayload, LxmfSdkSharedRecipient,
     RchServiceIdentityConfig, ReticulumdAnnounceRecord, ZmqDataPlane,
     delivery_snapshot_receipt_status, list_reticulumd_announces, lxmf_shared_batch_to_legacy_batch,
-    poll_reticulumd_events, reticulumd_event_to_envelope, reticulumd_message_to_envelope,
+    poll_reticulumd_events, reticulumd_message_to_envelope,
 };
 use rand_core::OsRng;
 use rns_core::identity::{PRIVATE_KEY_LENGTH, PrivateIdentity};
@@ -307,6 +308,7 @@ struct ReticulumdInboundWorkerStats {
     events_imported_total: u64,
     stream_gaps_total: u64,
     error_total: u64,
+    quarantined_total: u64,
     last_poll_ts_ms: Option<i64>,
     last_received_ts_ms: Option<i64>,
     last_announce_id: Option<String>,
@@ -316,6 +318,7 @@ struct ReticulumdInboundWorkerStats {
     last_event_type: Option<String>,
     last_cursor_reset_reason: Option<String>,
     last_error: Option<String>,
+    last_quarantine_error: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -3703,8 +3706,8 @@ fn process_reticulumd_event_batch(
                 announce_events.push(announce);
             }
             "inbound" | "InboundMessageReceived" => {
-                if let Some(envelope) = reticulumd_event_to_envelope(event, source)
-                    .map_err(|error| ApiError::Internal(error.to_string()))?
+                if let Some(envelope) =
+                    reticulumd_inbound::decode_event_or_quarantine(state, event, source)?
                 {
                     envelopes.push(envelope);
                 }
@@ -3793,8 +3796,8 @@ fn process_reticulumd_list_messages_result(
         if !destination.eq_ignore_ascii_case(source) {
             continue;
         }
-        if let Some(envelope) = reticulumd_message_to_envelope(message, source)
-            .map_err(|error| ApiError::Internal(error.to_string()))?
+        if let Some(envelope) =
+            reticulumd_inbound::decode_message_or_quarantine(state, message, source)?
         {
             if reticulumd_inbound_was_already_processed(state, &envelope)? {
                 continue;
@@ -10995,6 +10998,7 @@ fn reticulumd_inbound_worker_diagnostics(state: &AppState) -> Value {
             "events_imported_total": stats.events_imported_total,
             "stream_gaps_total": stats.stream_gaps_total,
             "error_total": stats.error_total,
+            "quarantined_total": stats.quarantined_total,
             "last_poll_ts_ms": stats.last_poll_ts_ms,
             "last_poll_at": stats.last_poll_ts_ms.map(iso8601_from_unix_ms),
             "last_received_ts_ms": stats.last_received_ts_ms,
@@ -11006,6 +11010,7 @@ fn reticulumd_inbound_worker_diagnostics(state: &AppState) -> Value {
             "last_event_type": stats.last_event_type,
             "last_cursor_reset_reason": stats.last_cursor_reset_reason,
             "last_error": stats.last_error,
+            "last_quarantine_error": stats.last_quarantine_error,
         }),
         Err(error) => json!({
             "configured": reticulumd_inbound_worker_configured(state),
