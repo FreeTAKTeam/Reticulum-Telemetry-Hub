@@ -142,6 +142,9 @@ $processes = @()
 $savedEnv = @{
     R3AKT_RETICULUMD_RPC_ENDPOINT = [Environment]::GetEnvironmentVariable("R3AKT_RETICULUMD_RPC_ENDPOINT")
     R3AKT_RETICULUMD_SOURCE = [Environment]::GetEnvironmentVariable("R3AKT_RETICULUMD_SOURCE")
+    R3AKT_RETICULUMD_FIELD_COMMAND_RPC_ENDPOINT = [Environment]::GetEnvironmentVariable("R3AKT_RETICULUMD_FIELD_COMMAND_RPC_ENDPOINT")
+    R3AKT_RETICULUMD_FIELD_COMMAND_SOURCE = [Environment]::GetEnvironmentVariable("R3AKT_RETICULUMD_FIELD_COMMAND_SOURCE")
+    R3AKT_RETICULUMD_FIELD_COMMAND_DESTINATION = [Environment]::GetEnvironmentVariable("R3AKT_RETICULUMD_FIELD_COMMAND_DESTINATION")
     R3AKT_RETICULUMD_RECEIPT_DESTINATION = [Environment]::GetEnvironmentVariable("R3AKT_RETICULUMD_RECEIPT_DESTINATION")
     R3AKT_RETICULUMD_FANOUT_DESTINATIONS = [Environment]::GetEnvironmentVariable("R3AKT_RETICULUMD_FANOUT_DESTINATIONS")
     R3AKT_RETICULUMD_RECEIPT_POLL_ATTEMPTS = [Environment]::GetEnvironmentVariable("R3AKT_RETICULUMD_RECEIPT_POLL_ATTEMPTS")
@@ -258,6 +261,9 @@ try {
 
     $env:R3AKT_RETICULUMD_RPC_ENDPOINT = "127.0.0.1:$($rpcPorts[0])"
     $env:R3AKT_RETICULUMD_SOURCE = $destinations[0]
+    $env:R3AKT_RETICULUMD_FIELD_COMMAND_RPC_ENDPOINT = "127.0.0.1:$($rpcPorts[1])"
+    $env:R3AKT_RETICULUMD_FIELD_COMMAND_SOURCE = $destinations[1]
+    $env:R3AKT_RETICULUMD_FIELD_COMMAND_DESTINATION = $destinations[0]
     $env:R3AKT_RETICULUMD_RECEIPT_DESTINATION = $destinations[1]
     $env:R3AKT_RETICULUMD_FANOUT_DESTINATIONS = ($destinations[1..($NodeCount - 1)] -join ",")
     $env:R3AKT_RETICULUMD_RECEIPT_POLL_ATTEMPTS = "$ReceiptPollAttempts"
@@ -283,6 +289,11 @@ try {
     }
 
     if (-not $ZmqLoadOnly) {
+        $cargoExit = Invoke-CargoGate -Arguments @("+$RustToolchain", "test", "-p", "r3akt-rch-server", "live_reticulumd_field_command_join_reaches_rch_and_reply_is_delivered_when_configured", "--", "--nocapture")
+        if ($cargoExit -ne 0) {
+            exit $cargoExit
+        }
+
         $cargoExit = Invoke-CargoGate -Arguments @("+$RustToolchain", "test", "-p", "r3akt-rch-server", "live_reticulumd_direct_send_receipt_is_delivered_when_configured", "--", "--nocapture")
         if ($cargoExit -ne 0) {
             exit $cargoExit
