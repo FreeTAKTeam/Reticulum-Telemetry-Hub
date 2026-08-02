@@ -10,6 +10,9 @@
 )]
 
 mod actor_helpers;
+mod field_commands;
+
+use field_commands::{DirectLxmfCommandResult, direct_lxmf_command};
 
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
@@ -36,8 +39,8 @@ use lxmf_sdk::{
     ZmqPipelineBackendClient, ZmqPipelineBackendConfig,
 };
 use r3akt_protocol::{
-    Command, Destination, NodeId, Payload, ProtocolEnvelope, TelemetrySample, Topic,
-    TopicAttachment, TopicMessage,
+    Destination, NodeId, Payload, ProtocolEnvelope, TelemetrySample, Topic, TopicAttachment,
+    TopicMessage,
 };
 use rns_rpc::rpc::zmq;
 #[cfg(test)]
@@ -710,14 +713,15 @@ impl LxmfRsAdapter for ReticulumdRpcLxmfRsAdapter<'_> {
                     base64::engine::general_purpose::STANDARD
                         .decode(payload_b64)
                         .map_err(|error| TransportError::Receive(error.to_string()))?
-                } else if let Some(envelope) =
-                    direct_lxmf_message_envelope(message, self.source.as_str())
-                {
+                } else {
+                    let Some(envelope) =
+                        direct_lxmf_message_envelope(message, self.source.as_str())?
+                    else {
+                        continue;
+                    };
                     envelope
                         .encode_msgpack()
                         .map_err(|error| TransportError::Receive(error.to_string()))?
-                } else {
-                    continue;
                 };
                 self.remember_seen(message_id);
                 let destination = message
@@ -2492,36 +2496,64 @@ fn lxmf_sdk_event_to_reticulumd_event_record(event: LxmfSdkEvent) -> ReticulumdE
 fn direct_lxmf_message_envelope(
     message: &JsonValue,
     local_source: &str,
-) -> Option<ProtocolEnvelope> {
+) -> Result<Option<ProtocolEnvelope>, TransportError> {
     let fields = message.get("fields").and_then(JsonValue::as_object);
     let source = optional_message_string(message, &["source", "source_hash", "source_id"])
         .unwrap_or("unknown");
-    if let Some(mut command) = direct_lxmf_mission_command(fields) {
-        if let Some(team_uid) = fields.and_then(|fields| {
-            optional_field_string(fields, &["11", "FIELD_GROUP", "group", "Group"])
-        }) {
-            if let Some(args) = command.args.as_object_mut() {
-                args.insert(
-                    "_rem_team_uid".to_string(),
-                    JsonValue::String(team_uid.to_string()),
-                );
+    match direct_lxmf_command(fields) {
+        DirectLxmfCommandResult::NoCommand => {}
+        DirectLxmfCommandResult::Valid(mut command) => {
+            if let Some(team_uid) = fields.and_then(|fields| {
+                optional_field_string(fields, &["11", "FIELD_GROUP", "group", "Group"])
+            }) {
+                if let Some(args) = command.args.as_object_mut() {
+                    args.insert(
+                        "_rem_team_uid".to_string(),
+                        JsonValue::String(team_uid.to_string()),
+                    );
+                }
             }
+            let mut envelope = ProtocolEnvelope::new(
+                NodeId::new(source),
+                Destination::Node(NodeId::new(local_source)),
+                Topic::new("rem-directory"),
+                Payload::Command(command),
+            );
+            if let Some(message_id) = message
+                .get("id")
+                .and_then(JsonValue::as_str)
+                .filter(|value| !value.trim().is_empty())
+            {
+                envelope = envelope.with_dedupe_key(message_id);
+            }
+            return Ok(Some(envelope));
         }
-        let mut envelope = ProtocolEnvelope::new(
-            NodeId::new(source),
-            Destination::Node(NodeId::new(local_source)),
-            Topic::new("rem-directory"),
-            Payload::Command(command),
-        );
-        if let Some(message_id) = message
-            .get("id")
-            .and_then(JsonValue::as_str)
-            .filter(|value| !value.trim().is_empty())
-        {
-            envelope = envelope.with_dedupe_key(message_id);
+        DirectLxmfCommandResult::Malformed(reason) => {
+            let message_id = message
+                .get("id")
+                .and_then(JsonValue::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("unknown");
+            return Err(TransportError::Receive(format!(
+                "malformed LXMF FIELD_COMMANDS (0x09) in message {message_id} from {source}: {reason}"
+            )));
         }
-        return Some(envelope);
     }
+    Ok(direct_lxmf_fallback_envelope(
+        fields,
+        message,
+        source,
+        local_source,
+    ))
+}
+
+fn direct_lxmf_fallback_envelope(
+    fields: Option<&serde_json::Map<String, JsonValue>>,
+    message: &JsonValue,
+    source: &str,
+    local_source: &str,
+) -> Option<ProtocolEnvelope> {
     if let Some(telemetry) = direct_lxmf_telemetry(fields, message) {
         let topic = Topic::new("telemetry");
         return Some(
@@ -2587,36 +2619,6 @@ fn direct_lxmf_message_envelope(
     )
 }
 
-fn direct_lxmf_mission_command(
-    fields: Option<&serde_json::Map<String, JsonValue>>,
-) -> Option<Command> {
-    let commands = fields?.get("9")?;
-    let command = commands
-        .as_array()
-        .and_then(|commands| commands.first())
-        .unwrap_or(commands);
-    let command_type = command
-        .get("command_type")
-        .and_then(JsonValue::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())?;
-    let command_id = command
-        .get("command_id")
-        .and_then(JsonValue::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string);
-    Some(Command {
-        name: command_type.to_string(),
-        args: command
-            .get("args")
-            .cloned()
-            .filter(JsonValue::is_object)
-            .unwrap_or_else(|| serde_json::json!({})),
-        correlation_id: command_id,
-    })
-}
-
 pub fn reticulumd_message_to_envelope(
     message: &JsonValue,
     local_source: &str,
@@ -2633,7 +2635,7 @@ pub fn reticulumd_message_to_envelope(
             .map_err(|error| TransportError::Receive(error.to_string()))?;
         return Ok(Some(envelope));
     }
-    Ok(direct_lxmf_message_envelope(message, local_source))
+    direct_lxmf_message_envelope(message, local_source)
 }
 
 pub fn reticulumd_event_to_envelope(

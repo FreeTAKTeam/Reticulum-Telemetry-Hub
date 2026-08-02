@@ -11462,6 +11462,12 @@ fn poll_reticulumd_delivery_receipts(state: &AppState) -> Result<(), ApiError> {
                 .and_then(|target| target.status.as_deref())
                 .unwrap_or("sent");
             mark_reticulumd_status_sent(state, &message_id, receipt_status)?;
+        } else if statuses.len() == targets.len()
+            && statuses
+                .iter()
+                .all(reticulumd_receipt_target_success_terminal)
+        {
+            mark_reticulumd_status_sent(state, &message_id, "sent")?;
         } else if statuses.len() == targets.len() {
             if let Some(receipt_status) =
                 propagated_fanout_partial_success_status(&message, &statuses)
@@ -12883,7 +12889,8 @@ fn command_help_text() -> String {
     let mut lines = vec![
         "# Command list".to_string(),
         String::new(),
-        "Use the `Command` field (`0`) for legacy/plugin payloads or `command_type` in mission-style envelopes carried in `FIELD_COMMANDS` (`0x09`).".to_string(),
+        "Use `FIELD_COMMANDS` (`0x09`) with `Command` or `0` for legacy/plugin payloads, or `command_type` with `args` for mission-style envelopes.".to_string(),
+        r#"Columba-compatible join: `{"9":[{"Command":"join"}]}` (numeric selector: `{"9":[{"0":"join"}]}`)."#.to_string(),
         "Tip: tag file/image attachments with a `TopicID` or send `AssociateTopicID` to link them to a topic.".to_string(),
         String::new(),
     ];
@@ -12914,15 +12921,21 @@ fn supported_commands_document() -> String {
         String::new(),
         "This document lists command families accepted by RCH over the LXMF southbound interface.".to_string(),
         String::new(),
-        "Legacy/plugin commands use `FIELD_COMMANDS` (`0x09`) with a `Command` value.".to_string(),
-        "Mission-sync, checklist, and REM registry commands use the mission envelope schema and select behavior with `command_type`.".to_string(),
+        "Legacy/plugin commands use `FIELD_COMMANDS` (`0x09`) with a `Command` or `0` selector; remaining fields in the first entry become command arguments.".to_string(),
+        "Mission-sync, checklist, and REM registry commands use the mission envelope schema and select behavior with `command_type` plus `args`.".to_string(),
         String::new(),
         "## Transport formats".to_string(),
         String::new(),
         "Legacy/plugin example:".to_string(),
         String::new(),
         "```json".to_string(),
-        r#"[{"Command":"ListTopic"}]"#.to_string(),
+        r#"{"9":[{"Command":"join"}]}"#.to_string(),
+        "```".to_string(),
+        String::new(),
+        "Legacy/plugin numeric selector example:".to_string(),
+        String::new(),
+        "```json".to_string(),
+        r#"{"9":[{"0":"leave"}]}"#.to_string(),
         "```".to_string(),
         String::new(),
         "Mission-style envelope example:".to_string(),
@@ -28333,6 +28346,7 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     mod auth;
+    mod field_commands;
     mod rem_team_directory;
 
     use crate::BASE64_STANDARD;
@@ -49090,6 +49104,11 @@ mod tests {
                 .get("receipt_pending")
                 .and_then(serde_json::Value::as_bool)
                 == Some(false)
+                && current
+                    .delivery_metadata
+                    .get("receipt_status")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
                 && receipt_targets.len() == destinations.len()
                 && receipt_targets.iter().all(|target| {
                     target
