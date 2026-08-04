@@ -69,6 +69,7 @@ const RETICULUMD_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const LXMF_ZMQ_SEND_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const LXMF_ZMQ_SEND_QUEUE_CAPACITY: usize = 20_000;
 const LXMF_ZMQ_CONTROL_QUEUE_CAPACITY: usize = 1_024;
+const LXMF_ZMQ_ACTOR_QUEUE_GRACE: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct ZmqDataPlaneStats {
@@ -80,6 +81,7 @@ pub struct ZmqDataPlaneStats {
     pub queue_max_depth: usize,
     pub enqueued_total: u64,
     pub backpressure_total: u64,
+    pub expired_total: u64,
     pub completed_total: u64,
     pub failed_total: u64,
     pub last_queue_wait_ms: u64,
@@ -112,6 +114,7 @@ struct ZmqDataPlaneMetrics {
     queue_max_depth: AtomicUsize,
     enqueued_total: AtomicU64,
     backpressure_total: AtomicU64,
+    expired_total: AtomicU64,
     completed_total: AtomicU64,
     failed_total: AtomicU64,
     last_queue_wait_ms: AtomicU64,
@@ -143,6 +146,10 @@ impl ZmqDataPlaneMetrics {
 
     fn record_backpressure(&self) {
         self.backpressure_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_expired(&self) {
+        self.expired_total.fetch_add(1, Ordering::Relaxed);
     }
 
     fn rollback_enqueued(&self, queued_at: Instant, is_send_lane: bool) {
@@ -254,6 +261,7 @@ impl ZmqDataPlaneMetrics {
             queue_max_depth: self.queue_max_depth.load(Ordering::Relaxed),
             enqueued_total: self.enqueued_total.load(Ordering::Relaxed),
             backpressure_total: self.backpressure_total.load(Ordering::Relaxed),
+            expired_total: self.expired_total.load(Ordering::Relaxed),
             completed_total: self.completed_total.load(Ordering::Relaxed),
             failed_total: self.failed_total.load(Ordering::Relaxed),
             last_queue_wait_ms: self.last_queue_wait_ms.load(Ordering::Relaxed),
@@ -1890,6 +1898,10 @@ fn run_zmq_data_plane_actor(
         recv_prioritized_actor_request(send_receiver, control_receiver, &mut send_burst)
     {
         metrics.record_dequeued(request.queued_at, request.payload.is_send_lane());
+        if actor_request_expired(request.queued_at, config.request_timeout) {
+            metrics.record_expired();
+            continue;
+        }
         let response_started = Instant::now();
         let shutting_down = matches!(request.payload, ZmqSdkActorPayload::Shutdown);
         if shutting_down && session.is_none() {
@@ -1987,6 +1999,9 @@ fn run_zmq_sdk_actor(
 ) {
     let mut session: Option<ZmqSdkActorSession> = None;
     while let Ok(request) = receiver.recv() {
+        if actor_request_expired(request.queued_at, config.request_timeout) {
+            continue;
+        }
         let shutting_down = matches!(request.payload, ZmqSdkActorPayload::Shutdown);
         if shutting_down && session.is_none() {
             send_actor_response(
@@ -2024,6 +2039,13 @@ fn run_zmq_sdk_actor(
             break;
         }
     }
+}
+
+fn actor_request_expired(queued_at: Instant, request_timeout: Duration) -> bool {
+    // The synchronous caller gives up after request_timeout plus the
+    // one-second receive grace. Replaying work after that deadline only
+    // consumes the single actor and fills the control queue again.
+    queued_at.elapsed() >= request_timeout.saturating_add(LXMF_ZMQ_ACTOR_QUEUE_GRACE)
 }
 
 fn open_zmq_sdk_actor_session(
@@ -4465,6 +4487,37 @@ mod tests {
             .expect("control request");
         assert!(matches!(control.payload, ZmqSdkActorPayload::Status(_)));
         assert_eq!(burst, 0);
+    }
+
+    #[test]
+    fn zmq_data_plane_drops_expired_requests_before_session_startup() {
+        let (send_tx, send_rx) = mpsc::sync_channel(1);
+        let (control_tx, control_rx) = mpsc::sync_channel(1);
+        let (response_tx, response_rx) = mpsc::channel();
+        send_tx
+            .send(ZmqSdkActorRequest {
+                payload: ZmqSdkActorPayload::Status("stale-status".to_string()),
+                response: response_tx,
+                queued_at: Instant::now()
+                    .checked_sub(Duration::from_secs(2))
+                    .expect("instant subtraction"),
+            })
+            .expect("queue stale request");
+        drop(send_tx);
+        drop(control_tx);
+
+        let mut config = rch_local_zmq_pipeline_config("tcp://127.0.0.1:1", "tcp://127.0.0.1:2");
+        config.request_timeout = Duration::from_millis(50);
+        let metrics = ZmqDataPlaneMetrics::default();
+        run_zmq_data_plane_actor(&config, &send_rx, &control_rx, &metrics);
+
+        let stats = metrics.snapshot();
+        assert_eq!(stats.expired_total, 1);
+        assert_eq!(stats.queue_depth, 0);
+        assert!(matches!(
+            response_rx.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
     }
 
     #[test]
