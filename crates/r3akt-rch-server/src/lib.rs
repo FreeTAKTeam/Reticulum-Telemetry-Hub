@@ -10460,6 +10460,7 @@ fn lxmf_sdk_diagnostics_payload(
             "queue_max_depth": data_plane.map(|stats| stats.queue_max_depth),
             "enqueued_total": data_plane.map(|stats| stats.enqueued_total),
             "rejected_total": data_plane.map(|stats| stats.backpressure_total),
+            "expired_total": data_plane.map(|stats| stats.expired_total),
             "completed_total": data_plane.map(|stats| stats.completed_total),
             "failed_total": data_plane.map(|stats| stats.failed_total),
             "last_queue_wait_ms": data_plane.map(|stats| stats.last_queue_wait_ms),
