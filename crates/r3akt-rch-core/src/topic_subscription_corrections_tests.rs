@@ -1,5 +1,5 @@
 #[test]
-fn snapshot_rejects_duplicate_normalized_subscriptions_and_orphans() {
+fn snapshot_rejects_duplicate_normalized_subscriptions_and_preserves_compatibility_rows() {
     let mut core = RchCore::new();
     core.handle_command(&command(
         "topic.create",
@@ -28,12 +28,57 @@ fn snapshot_rejects_duplicate_normalized_subscriptions_and_orphans() {
 
     let mut orphan = core.snapshot();
     orphan.subscribers[0].topic_id = "missing-topic".to_string();
-    let orphan_error = RchCore::from_snapshot(orphan).expect_err("orphan rejected");
-    assert!(
-        orphan_error
-            .to_string()
-            .contains("topic 'missing-topic' is missing")
+    let restored_orphan = RchCore::from_snapshot(orphan).expect("orphan preserved");
+    assert_eq!(
+        restored_orphan.snapshot().subscribers[0].topic_id,
+        "missing-topic"
     );
+
+    let mut topicless = core.snapshot();
+    topicless.subscribers[0].topic_id = " ".to_string();
+    let restored_topicless = RchCore::from_snapshot(topicless).expect("topicless preserved");
+    assert_eq!(restored_topicless.snapshot().subscribers[0].topic_id, "");
+}
+
+#[test]
+fn sqlite_read_snapshot_keeps_topicless_compatibility_subscribers_loadable() {
+    let db_path = std::env::temp_dir().join(format!(
+        "r3akt-rch-core-topicless-subscriber-{}.db",
+        Uuid::new_v4()
+    ));
+    let mut store = RchSqliteStore::open(&db_path).expect("sqlite");
+    store
+        .upsert_topic(&TopicRecord {
+            topic_id: "ops".to_string(),
+            topic_name: "Ops".to_string(),
+            topic_path: "ops".to_string(),
+            topic_description: String::new(),
+            retention: RetentionPolicy::Persistent,
+            visibility: Visibility::Public,
+            created_ts_ms: 1,
+            last_activity_ts_ms: 1,
+        })
+        .expect("topic");
+    store
+        .upsert_subscriber(&SubscriberRecord {
+            node_id: "DEST-COMPAT".to_string(),
+            topic_id: String::new(),
+            first_seen_ts_ms: 1,
+            last_seen_ts_ms: 1,
+            reject_tests: None,
+            metadata: json!({ "source": "compatibility" }),
+        })
+        .expect("subscriber");
+
+    let snapshot = store
+        .load_r3akt_read_snapshot()
+        .expect("read snapshot");
+    let core = RchCore::from_snapshot(snapshot).expect("compatibility snapshot");
+    assert_eq!(core.snapshot().subscribers[0].node_id, "DEST-COMPAT");
+    assert_eq!(core.snapshot().subscribers[0].topic_id, "");
+
+    drop(store);
+    let _ = std::fs::remove_file(db_path);
 }
 #[test]
 fn sqlite_migration_is_additive_for_existing_database_like_python_startup() {

@@ -4118,9 +4118,9 @@ impl RchCore {
                         "subscriber invariant violation: destination is empty".to_string(),
                     )
                 })?;
-            let normalized_topic_id = normalize_topic_id(Some(topic_id)).ok_or_else(|| {
+            let normalized_topic_id = normalize_subscriber_topic_id(topic_id).ok_or_else(|| {
                 RchCoreError::InvalidPayload(
-                    "subscriber invariant violation: topic_id is empty".to_string(),
+                    "subscriber invariant violation: topic_id is invalid".to_string(),
                 )
             })?;
             if normalized_node_id != *node_id
@@ -4133,11 +4133,10 @@ impl RchCore {
                         .to_string(),
                 ));
             }
-            if !self.topics.contains_key(topic_id) {
-                return Err(RchCoreError::InvalidPayload(format!(
-                    "subscriber invariant violation: topic '{topic_id}' is missing"
-                )));
-            }
+            // The compatibility /Subscriber routes historically persist
+            // topic-less and orphaned rows. New core subscriptions still
+            // require an existing topic in `subscribe`, but loading those
+            // rows must remain lossless and must not make R3AKT reads fail.
             if !normalized_pairs.insert((normalized_node_id, normalized_topic_id)) {
                 return Err(RchCoreError::InvalidPayload(
                     "subscriber invariant violation: duplicate normalized destination/topic pair"
@@ -4171,11 +4170,12 @@ impl RchCore {
                         "subscriber invariant violation: destination is empty".to_string(),
                     )
                 })?;
-            let topic_id = normalize_topic_id(Some(&subscriber.topic_id)).ok_or_else(|| {
-                RchCoreError::InvalidPayload(
-                    "subscriber invariant violation: topic_id is empty".to_string(),
-                )
-            })?;
+            let topic_id =
+                normalize_subscriber_topic_id(&subscriber.topic_id).ok_or_else(|| {
+                    RchCoreError::InvalidPayload(
+                        "subscriber invariant violation: topic_id is invalid".to_string(),
+                    )
+                })?;
             subscriber.node_id.clone_from(&node_id);
             subscriber.topic_id.clone_from(&topic_id);
             let key = (node_id, topic_id);
@@ -10462,6 +10462,15 @@ fn normalize_subscriber_node_id(value: Option<&str>) -> Option<String> {
         Some(text.to_ascii_lowercase())
     } else {
         Some(text.to_string())
+    }
+}
+
+fn normalize_subscriber_topic_id(value: &str) -> Option<String> {
+    let text = value.trim();
+    if text.is_empty() {
+        Some(String::new())
+    } else {
+        normalize_topic_id(Some(text))
     }
 }
 
