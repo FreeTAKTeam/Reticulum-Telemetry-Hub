@@ -393,7 +393,9 @@ const RCH_ROLE_BUNDLES: &[RchRoleBundleDefinition] = &[
 
 const RCH_SQLITE_MIGRATION_SQL: &str = include_str!("../migrations/0001_rch_core_snapshot.sql");
 const RCH_SQLITE_MIGRATION_2_SQL: &str = include_str!("../migrations/0002_ordered_migrations.sql");
-const RCH_SQLITE_SCHEMA_VERSION: &str = "2";
+const RCH_SQLITE_MIGRATION_3_SQL: &str =
+    include_str!("../migrations/0003_topic_subscription_corrections.sql");
+const RCH_SQLITE_SCHEMA_VERSION: &str = "3";
 const RCH_SQLITE_READ_BUSY_TIMEOUT_MS: u64 = 250;
 const RCH_SQLITE_WRITE_BUSY_TIMEOUT_MS: u64 = 1_000;
 const RCH_SQLITE_ADMIN_BUSY_TIMEOUT_MS: u64 = 30_000;
@@ -1070,7 +1072,6 @@ pub struct RchCommandOutcome {
 #[derive(Debug, Default)]
 pub struct RchCore {
     topics: HashMap<String, TopicRecord>,
-    subscriptions: HashSet<(String, String)>,
     subscribers: HashMap<(String, String), SubscriberRecord>,
     messages: Vec<MessageRecord>,
     clients: HashMap<String, ClientRecord>,
@@ -2078,10 +2079,16 @@ impl RchSqliteStore {
     }
 
     pub fn delete_topic(&mut self, topic_id: &str) -> Result<(), RchCoreError> {
-        self.connection.execute(
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
             "DELETE FROM rch_topics WHERE topic_id = ?1",
             params![topic_id],
         )?;
+        transaction.execute(
+            "DELETE FROM rch_subscribers WHERE topic_id = ?1",
+            params![topic_id],
+        )?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -2767,12 +2774,18 @@ impl RchSqliteStore {
                 [],
                 |row| row.get::<_, bool>(0),
             )?;
-        if migration_2_applied {
+        let migration_3_applied = has_migration_history
+            && self.connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM rch_schema_migrations WHERE version = 3)",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?;
+        if migration_3_applied {
             return Ok(());
         }
         if has_existing_schema {
             self.integrity_check()?;
-            self.backup_before_migration(2)?;
+            self.backup_before_migration(if migration_2_applied { 3 } else { 2 })?;
         }
         self.connection.execute_batch("BEGIN IMMEDIATE;")?;
         let migration_result = (|| -> Result<(), RchCoreError> {
@@ -2789,60 +2802,67 @@ impl RchSqliteStore {
                  VALUES (1, 'rch_core_snapshot', ?1)",
                 [utc_now_ms()],
             )?;
-            if !sqlite_table_has_column(
-                &self.connection,
-                "rch_checklist_feed_publications",
-                "published_ts_ms",
-            )? {
-                self.connection.execute(
-                    "ALTER TABLE rch_checklist_feed_publications
-                 ADD COLUMN published_ts_ms INTEGER NOT NULL DEFAULT 0",
-                    [],
-                )?;
-            }
-            if !sqlite_table_has_column(&self.connection, "rch_checklist_columns", "display_order")?
-            {
-                self.connection.execute(
-                    "ALTER TABLE rch_checklist_columns
-                 ADD COLUMN display_order INTEGER NOT NULL DEFAULT 0",
-                    [],
-                )?;
-            }
-            for (column, definition) in [
-                ("delivery_state", "TEXT NOT NULL DEFAULT 'queued'"),
-                ("dispatch_status", "TEXT NOT NULL DEFAULT 'queued'"),
-                ("next_attempt_at_ts_ms", "INTEGER"),
-                ("attempts", "INTEGER NOT NULL DEFAULT 0"),
-                ("priority", "INTEGER NOT NULL DEFAULT 0"),
-                ("batch_id", "TEXT"),
-                ("created_ts_ms", "INTEGER NOT NULL DEFAULT 0"),
-            ] {
-                if !sqlite_table_has_column(&self.connection, "rch_messages", column)? {
+            if !migration_2_applied {
+                if !sqlite_table_has_column(
+                    &self.connection,
+                    "rch_checklist_feed_publications",
+                    "published_ts_ms",
+                )? {
                     self.connection.execute(
-                        &format!("ALTER TABLE rch_messages ADD COLUMN {column} {definition}"),
+                        "ALTER TABLE rch_checklist_feed_publications
+                 ADD COLUMN published_ts_ms INTEGER NOT NULL DEFAULT 0",
                         [],
                     )?;
                 }
-            }
-            if !sqlite_table_has_column(&self.connection, "rch_mission_changes", "mission_uid")? {
-                self.connection.execute(
+                if !sqlite_table_has_column(
+                    &self.connection,
+                    "rch_checklist_columns",
+                    "display_order",
+                )? {
+                    self.connection.execute(
+                        "ALTER TABLE rch_checklist_columns
+                 ADD COLUMN display_order INTEGER NOT NULL DEFAULT 0",
+                        [],
+                    )?;
+                }
+                for (column, definition) in [
+                    ("delivery_state", "TEXT NOT NULL DEFAULT 'queued'"),
+                    ("dispatch_status", "TEXT NOT NULL DEFAULT 'queued'"),
+                    ("next_attempt_at_ts_ms", "INTEGER"),
+                    ("attempts", "INTEGER NOT NULL DEFAULT 0"),
+                    ("priority", "INTEGER NOT NULL DEFAULT 0"),
+                    ("batch_id", "TEXT"),
+                    ("created_ts_ms", "INTEGER NOT NULL DEFAULT 0"),
+                ] {
+                    if !sqlite_table_has_column(&self.connection, "rch_messages", column)? {
+                        self.connection.execute(
+                            &format!("ALTER TABLE rch_messages ADD COLUMN {column} {definition}"),
+                            [],
+                        )?;
+                    }
+                }
+                if !sqlite_table_has_column(&self.connection, "rch_mission_changes", "mission_uid")?
+                {
+                    self.connection.execute(
                 "ALTER TABLE rch_mission_changes ADD COLUMN mission_uid TEXT NOT NULL DEFAULT ''",
                 [],
             )?;
-            }
-            for (column, definition) in [
-                ("mission_uid", "TEXT NOT NULL DEFAULT ''"),
-                ("task_uid", "TEXT NOT NULL DEFAULT ''"),
-                ("team_member_rns_identity", "TEXT NOT NULL DEFAULT ''"),
-            ] {
-                if !sqlite_table_has_column(&self.connection, "rch_assignments", column)? {
-                    self.connection.execute(
-                        &format!("ALTER TABLE rch_assignments ADD COLUMN {column} {definition}"),
-                        [],
-                    )?;
                 }
-            }
-            self.connection.execute_batch(
+                for (column, definition) in [
+                    ("mission_uid", "TEXT NOT NULL DEFAULT ''"),
+                    ("task_uid", "TEXT NOT NULL DEFAULT ''"),
+                    ("team_member_rns_identity", "TEXT NOT NULL DEFAULT ''"),
+                ] {
+                    if !sqlite_table_has_column(&self.connection, "rch_assignments", column)? {
+                        self.connection.execute(
+                            &format!(
+                                "ALTER TABLE rch_assignments ADD COLUMN {column} {definition}"
+                            ),
+                            [],
+                        )?;
+                    }
+                }
+                self.connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_rch_messages_queue_due
                 ON rch_messages (delivery_state, dispatch_status, next_attempt_at_ts_ms, priority, id);
              CREATE INDEX IF NOT EXISTS idx_rch_messages_batch
@@ -2881,13 +2901,22 @@ impl RchSqliteStore {
                 WHERE delivery_state = 'queued';
              CREATE INDEX IF NOT EXISTS idx_rch_outbound_jobs_batch
                 ON rch_outbound_jobs (batch_id);",
-        )?;
-            self.connection.execute_batch(RCH_SQLITE_MIGRATION_2_SQL)?;
-            self.connection.execute(
-                "INSERT INTO rch_schema_migrations (version, name, applied_ts_ms)
-             VALUES (2, 'ordered_migrations', ?1)",
-                [utc_now_ms()],
-            )?;
+                )?;
+                self.connection.execute_batch(RCH_SQLITE_MIGRATION_2_SQL)?;
+                self.connection.execute(
+                    "INSERT INTO rch_schema_migrations (version, name, applied_ts_ms)
+                 VALUES (2, 'ordered_migrations', ?1)",
+                    [utc_now_ms()],
+                )?;
+            }
+            if !migration_3_applied {
+                self.connection.execute_batch(RCH_SQLITE_MIGRATION_3_SQL)?;
+                self.connection.execute(
+                    "INSERT INTO rch_schema_migrations (version, name, applied_ts_ms)
+                 VALUES (3, 'topic_subscription_corrections', ?1)",
+                    [utc_now_ms()],
+                )?;
+            }
             self.connection.execute(
                 "INSERT OR REPLACE INTO rch_settings (setting_key, setting_value)
              VALUES ('schema_version', ?1)",
@@ -4080,16 +4109,82 @@ impl RchCore {
         records
     }
 
+    fn validate_subscriber_invariants(&self) -> Result<(), RchCoreError> {
+        let mut normalized_pairs = HashSet::new();
+        for ((node_id, topic_id), subscriber) in &self.subscribers {
+            let normalized_node_id =
+                normalize_subscriber_node_id(Some(node_id)).ok_or_else(|| {
+                    RchCoreError::InvalidPayload(
+                        "subscriber invariant violation: destination is empty".to_string(),
+                    )
+                })?;
+            let normalized_topic_id = normalize_topic_id(Some(topic_id)).ok_or_else(|| {
+                RchCoreError::InvalidPayload(
+                    "subscriber invariant violation: topic_id is empty".to_string(),
+                )
+            })?;
+            if normalized_node_id != *node_id
+                || normalized_topic_id != *topic_id
+                || subscriber.node_id != *node_id
+                || subscriber.topic_id != *topic_id
+            {
+                return Err(RchCoreError::InvalidPayload(
+                    "subscriber invariant violation: key and record are not normalized or do not match"
+                        .to_string(),
+                ));
+            }
+            if !self.topics.contains_key(topic_id) {
+                return Err(RchCoreError::InvalidPayload(format!(
+                    "subscriber invariant violation: topic '{topic_id}' is missing"
+                )));
+            }
+            if !normalized_pairs.insert((normalized_node_id, normalized_topic_id)) {
+                return Err(RchCoreError::InvalidPayload(
+                    "subscriber invariant violation: duplicate normalized destination/topic pair"
+                        .to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_lines)]
     pub fn from_snapshot(snapshot: RchCoreSnapshot) -> Result<Self, RchCoreError> {
         let mut core = Self::new();
-        for topic in snapshot.topics {
-            core.topics.insert(topic.topic_id.clone(), topic);
+        for mut topic in snapshot.topics {
+            let topic_id = normalize_topic_id(Some(&topic.topic_id)).ok_or_else(|| {
+                RchCoreError::InvalidPayload(
+                    "topic invariant violation: topic_id is empty".to_string(),
+                )
+            })?;
+            topic.topic_id.clone_from(&topic_id);
+            if core.topics.insert(topic_id.clone(), topic).is_some() {
+                return Err(RchCoreError::InvalidPayload(format!(
+                    "topic invariant violation: duplicate normalized topic '{topic_id}'"
+                )));
+            }
         }
-        for subscriber in snapshot.subscribers {
-            let key = (subscriber.node_id.clone(), subscriber.topic_id.clone());
-            core.subscriptions.insert(key.clone());
-            core.subscribers.insert(key, subscriber);
+        for mut subscriber in snapshot.subscribers {
+            let node_id =
+                normalize_subscriber_node_id(Some(&subscriber.node_id)).ok_or_else(|| {
+                    RchCoreError::InvalidPayload(
+                        "subscriber invariant violation: destination is empty".to_string(),
+                    )
+                })?;
+            let topic_id = normalize_topic_id(Some(&subscriber.topic_id)).ok_or_else(|| {
+                RchCoreError::InvalidPayload(
+                    "subscriber invariant violation: topic_id is empty".to_string(),
+                )
+            })?;
+            subscriber.node_id.clone_from(&node_id);
+            subscriber.topic_id.clone_from(&topic_id);
+            let key = (node_id, topic_id);
+            if core.subscribers.insert(key, subscriber).is_some() {
+                return Err(RchCoreError::InvalidPayload(
+                    "subscriber invariant violation: duplicate normalized destination/topic pair"
+                        .to_string(),
+                ));
+            }
         }
         core.messages = snapshot.messages;
         for client in snapshot.clients {
@@ -4235,6 +4330,7 @@ impl RchCore {
             );
         }
         core.authorization_required = snapshot.authorization_required;
+        core.validate_subscriber_invariants()?;
         Ok(core)
     }
 
@@ -8886,6 +8982,8 @@ impl RchCore {
                 attachment.updated_ts_ms = utc_now_ms();
             }
         }
+        self.subscribers
+            .retain(|(_, subscribed_topic_id), _| subscribed_topic_id != &topic_id);
         Ok(topic)
     }
 
@@ -8928,9 +9026,10 @@ impl RchCore {
         if !self.topics.contains_key(topic_id) {
             return Err(RchCoreError::TopicNotFound);
         }
+        let subscriber_id = normalize_subscriber_node_id(Some(subscriber_id))
+            .ok_or_else(|| RchCoreError::InvalidPayload("Destination is required".to_string()))?;
         let now = utc_now_ms();
-        let key = (subscriber_id.to_string(), topic_id.to_string());
-        self.subscriptions.insert(key.clone());
+        let key = (subscriber_id.clone(), topic_id.to_string());
         self.subscribers
             .entry(key)
             .and_modify(|record| {
@@ -8939,7 +9038,7 @@ impl RchCore {
                 record.metadata = metadata.clone();
             })
             .or_insert_with(|| SubscriberRecord {
-                node_id: subscriber_id.to_string(),
+                node_id: subscriber_id,
                 topic_id: topic_id.to_string(),
                 first_seen_ts_ms: now,
                 last_seen_ts_ms: now,
@@ -8954,6 +9053,8 @@ impl RchCore {
         args: &Value,
     ) -> Result<SubscriberRecord, RchCoreError> {
         let subscriber_id = required_text(args, &["subscriber_id", "SubscriberID"])?;
+        let subscriber_id = normalize_subscriber_node_id(Some(&subscriber_id))
+            .ok_or_else(|| RchCoreError::InvalidPayload("SubscriberID is required".to_string()))?;
         let existing_key = self
             .subscribers
             .keys()
@@ -8962,19 +9063,20 @@ impl RchCore {
             .ok_or(RchCoreError::TopicNotFound)?;
         let mut subscriber = self
             .subscribers
-            .remove(&existing_key)
+            .get(&existing_key)
+            .cloned()
             .ok_or(RchCoreError::TopicNotFound)?;
-        self.subscriptions.remove(&existing_key);
 
         if let Some(destination) = optional_text(args, &["destination", "Destination"]) {
-            subscriber.node_id = destination;
+            subscriber.node_id =
+                normalize_subscriber_node_id(Some(&destination)).ok_or_else(|| {
+                    RchCoreError::InvalidPayload("Destination is required".to_string())
+                })?;
         }
         if let Some(topic_id) = optional_text(args, &["topic_id", "TopicID"]) {
             let topic_id = normalize_topic_id(Some(&topic_id))
                 .ok_or_else(|| RchCoreError::InvalidPayload("TopicID is required".to_string()))?;
             if !self.topics.contains_key(&topic_id) {
-                self.subscribers.insert(existing_key.clone(), subscriber);
-                self.subscriptions.insert(existing_key);
                 return Err(RchCoreError::TopicNotFound);
             }
             subscriber.topic_id = topic_id;
@@ -8991,7 +9093,12 @@ impl RchCore {
         subscriber.last_seen_ts_ms = utc_now_ms();
 
         let updated_key = (subscriber.node_id.clone(), subscriber.topic_id.clone());
-        self.subscriptions.insert(updated_key.clone());
+        if updated_key != existing_key && self.subscribers.contains_key(&updated_key) {
+            return Err(RchCoreError::InvalidPayload(
+                "normalized subscriber destination/topic pair already exists".to_string(),
+            ));
+        }
+        self.subscribers.remove(&existing_key);
         self.subscribers.insert(updated_key, subscriber.clone());
         Ok(subscriber)
     }
@@ -9001,13 +9108,14 @@ impl RchCore {
         args: &Value,
     ) -> Result<SubscriberRecord, RchCoreError> {
         let subscriber_id = required_text(args, &["subscriber_id", "SubscriberID", "id", "ID"])?;
+        let subscriber_id = normalize_subscriber_node_id(Some(&subscriber_id))
+            .ok_or_else(|| RchCoreError::InvalidPayload("SubscriberID is required".to_string()))?;
         let key = self
             .subscribers
             .keys()
             .find(|(node_id, _)| node_id == &subscriber_id)
             .cloned()
             .ok_or(RchCoreError::TopicNotFound)?;
-        self.subscriptions.remove(&key);
         self.subscribers
             .remove(&key)
             .ok_or(RchCoreError::TopicNotFound)
@@ -10343,6 +10451,18 @@ pub fn normalize_topic_id(value: Option<&str>) -> Option<String> {
         .map(|uuid| uuid.simple().to_string())
         .ok()
         .or_else(|| Some(text.to_string()))
+}
+
+fn normalize_subscriber_node_id(value: Option<&str>) -> Option<String> {
+    let text = value?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if text.len() == 32 && text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Some(text.to_ascii_lowercase())
+    } else {
+        Some(text.to_string())
+    }
 }
 
 #[must_use]
@@ -13080,7 +13200,7 @@ mod tests {
                 .expect("setting lookup"),
             None
         );
-        assert_eq!(store.schema_version().expect("schema version"), "2");
+        assert_eq!(store.schema_version().expect("schema version"), "3");
     }
 
     #[test]
@@ -13403,6 +13523,8 @@ mod tests {
             CommandResultStatus::Accepted
         );
         assert_eq!(core.subscribers("mission-1").len(), 1);
+        core.validate_subscriber_invariants()
+            .expect("subscriber invariants");
         assert_eq!(
             core.handle_command(&list).result.status,
             CommandResultStatus::Accepted
@@ -13539,9 +13661,47 @@ mod tests {
             "mission.topic.deleted"
         );
         assert!(core.topics().is_empty());
-        let orphaned_subscribers = core.subscribers("mission-1");
-        assert_eq!(orphaned_subscribers.len(), 1);
-        assert_eq!(orphaned_subscribers[0].node_id, "FACEFEED");
+        assert!(core.subscribers("mission-1").is_empty());
+        core.validate_subscriber_invariants()
+            .expect("subscriber invariants after topic deletion");
+    }
+
+    #[test]
+    fn snapshot_rejects_duplicate_normalized_subscriptions_and_orphans() {
+        let mut core = RchCore::new();
+        core.handle_command(&command(
+            "topic.create",
+            json!({ "topic_id": "mission-1", "topic_path": "mission-1", "topic_name": "Mission 1" }),
+        ));
+        core.handle_command(&command(
+            "topic.subscribe",
+            json!({ "topic_id": "mission-1", "destination": "FACEFEED" }),
+        ));
+
+        let mut duplicate = core.snapshot();
+        duplicate.subscribers.push(SubscriberRecord {
+            node_id: " FACEFEED ".to_string(),
+            topic_id: " mission-1 ".to_string(),
+            first_seen_ts_ms: 0,
+            last_seen_ts_ms: 0,
+            reject_tests: None,
+            metadata: json!({}),
+        });
+        let duplicate_error = RchCore::from_snapshot(duplicate).expect_err("duplicate rejected");
+        assert!(
+            duplicate_error
+                .to_string()
+                .contains("duplicate normalized destination/topic pair")
+        );
+
+        let mut orphan = core.snapshot();
+        orphan.subscribers[0].topic_id = "missing-topic".to_string();
+        let orphan_error = RchCore::from_snapshot(orphan).expect_err("orphan rejected");
+        assert!(
+            orphan_error
+                .to_string()
+                .contains("topic 'missing-topic' is missing")
+        );
     }
 
     #[test]
@@ -16567,7 +16727,7 @@ mod tests {
 
         let mut store = RchSqliteStore::in_memory().expect("sqlite");
         core.save_to_sqlite(&mut store).expect("save");
-        assert_eq!(store.schema_version().expect("schema version"), "2");
+        assert_eq!(store.schema_version().expect("schema version"), "3");
         assert_sqlite_snapshot_counts(&store);
 
         let mut restored = RchCore::load_from_sqlite(&store)
@@ -16611,7 +16771,19 @@ mod tests {
             .compact_if_free_percent_exceeds(100.0, 100)
             .expect("no-op compaction");
 
-        assert_eq!(migration_count, 2);
+        assert_eq!(migration_count, 3);
+
+        let index_exists: bool = store
+            .connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_rch_subscribers_topic_node')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("subscriber topic index");
+        assert!(index_exists);
+
+        drop(store);
         assert!(stats.page_count > 0);
         assert!(!report.compacted);
         assert!(!report.requires_incremental_mode_conversion);
@@ -16652,8 +16824,35 @@ mod tests {
         }
 
         let store = RchSqliteStore::open(&db_path).expect("migrated store");
-        assert_eq!(store.schema_version().expect("schema version"), "2");
+        assert_eq!(store.schema_version().expect("schema version"), "3");
+        let migration_count: i64 = store
+            .connection
+            .query_row("SELECT COUNT(*) FROM rch_schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .expect("migration count");
+        assert_eq!(migration_count, 3);
+        let index_count: i64 = store
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_rch_subscribers_topic_node'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("subscriber topic index");
+        assert_eq!(index_count, 1);
         drop(store);
+
+        let reopened = RchSqliteStore::open(&db_path).expect("reopened store");
+        assert_eq!(reopened.schema_version().expect("schema version"), "3");
+        let reopened_migration_count: i64 = reopened
+            .connection
+            .query_row("SELECT COUNT(*) FROM rch_schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .expect("reopened migration count");
+        assert_eq!(reopened_migration_count, 3);
+        drop(reopened);
 
         let connection = Connection::open(&db_path).expect("sqlite");
         let legacy_id: String = connection
@@ -16674,6 +16873,77 @@ mod tests {
         assert_eq!(legacy_id, "probe-1");
         assert_eq!(rch_topic_table, "rch_topics");
         drop(connection);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn sqlite_migration_preserves_existing_subscriber_payloads() {
+        let db_path = std::env::temp_dir().join(format!(
+            "r3akt-rch-core-subscriber-migration-{}.db",
+            Uuid::new_v4()
+        ));
+        let topic = TopicRecord {
+            topic_id: "mission-legacy".to_string(),
+            topic_name: "Legacy Mission".to_string(),
+            topic_path: "mission-legacy".to_string(),
+            topic_description: String::new(),
+            retention: RetentionPolicy::Persistent,
+            visibility: Visibility::Public,
+            created_ts_ms: 1,
+            last_activity_ts_ms: 2,
+        };
+        let subscriber = SubscriberRecord {
+            node_id: "DEST-LEGACY".to_string(),
+            topic_id: "mission-legacy".to_string(),
+            first_seen_ts_ms: 3,
+            last_seen_ts_ms: 4,
+            reject_tests: Some(1),
+            metadata: json!({ "source": "legacy" }),
+        };
+        {
+            let connection = Connection::open(&db_path).expect("sqlite");
+            connection
+                .execute_batch(include_str!("../migrations/0001_rch_core_snapshot.sql"))
+                .expect("v1 migration");
+            connection
+                .execute_batch(include_str!("../migrations/0002_ordered_migrations.sql"))
+                .expect("v2 migration");
+            connection
+                .execute(
+                    "INSERT INTO rch_schema_migrations (version, name, applied_ts_ms) VALUES (1, 'rch_core_snapshot', 1), (2, 'ordered_migrations', 2)",
+                    [],
+                )
+                .expect("migration history");
+            connection
+                .execute(
+                    "INSERT INTO rch_topics (topic_id, payload) VALUES (?1, ?2)",
+                    params![
+                        &topic.topic_id,
+                        encode_msgpack(&topic).expect("topic payload")
+                    ],
+                )
+                .expect("topic payload");
+            connection
+                .execute(
+                    "INSERT INTO rch_subscribers (node_id, topic_id, payload) VALUES (?1, ?2, ?3)",
+                    params![
+                        &subscriber.node_id,
+                        &subscriber.topic_id,
+                        encode_msgpack(&subscriber).expect("subscriber payload")
+                    ],
+                )
+                .expect("subscriber payload");
+        }
+
+        let store = RchSqliteStore::open(&db_path).expect("migrated store");
+        assert_eq!(store.schema_version().expect("schema version"), "3");
+        let snapshot = store
+            .load_snapshot()
+            .expect("load snapshot")
+            .expect("snapshot");
+        assert_eq!(snapshot.topics, vec![topic]);
+        assert_eq!(snapshot.subscribers, vec![subscriber]);
+        drop(store);
         let _ = std::fs::remove_file(db_path);
     }
 
@@ -16701,7 +16971,7 @@ mod tests {
         }
 
         let store = RchSqliteStore::open(&db_path).expect("migrated store");
-        assert_eq!(store.schema_version().expect("schema version"), "2");
+        assert_eq!(store.schema_version().expect("schema version"), "3");
         drop(store);
 
         let connection = Connection::open(&db_path).expect("sqlite");

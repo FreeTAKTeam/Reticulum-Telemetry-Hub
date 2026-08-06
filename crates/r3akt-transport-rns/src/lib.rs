@@ -1366,6 +1366,7 @@ struct ZmqSdkActorRequest {
 struct ZmqSdkActorSession {
     client: LxmfSdkClient<ZmqPipelineBackendClient>,
     runtime_info: ZmqRuntimeInfo,
+    identity: Option<RchServiceIdentityConfig>,
 }
 
 impl ZmqDataPlane {
@@ -1946,39 +1947,24 @@ fn run_zmq_data_plane_actor(
             send_actor_response(&request.response, result, "missing session");
             continue;
         };
-        let payload = match request.payload {
+        let identity_after_request = match &request.payload {
+            ZmqSdkActorPayload::RegisterIdentity(config) => Some(config.clone()),
             ZmqSdkActorPayload::UpdateIdentity {
                 display_name,
                 capabilities,
                 metadata,
-            } => {
-                let Some(mut config) = service_identity.clone() else {
-                    let result = Err(TransportError::Send(
-                        "RCH service identity is not registered".to_string(),
-                    ));
-                    metrics.record_result(&result, response_started.elapsed());
-                    send_actor_response(
-                        &request.response,
-                        result,
-                        "identity update without registration",
-                    );
-                    continue;
-                };
-                config.display_name = display_name;
-                config.capabilities = capabilities;
-                config.metadata = metadata;
-                ZmqSdkActorPayload::RegisterIdentity(config)
-            }
-            payload => payload,
-        };
-        let registration = match &payload {
-            ZmqSdkActorPayload::RegisterIdentity(config) => Some(config.clone()),
+            } => service_identity.clone().map(|mut config| {
+                config.display_name.clone_from(display_name);
+                config.capabilities.clone_from(capabilities);
+                config.metadata.clone_from(metadata);
+                config
+            }),
             _ => None,
         };
-        let result = send_lxmf_zmq_actor_request(active_session, payload);
+        let result = send_lxmf_zmq_actor_request(active_session, request.payload);
         if result.is_ok() {
-            if let Some(registration) = registration {
-                service_identity = Some(registration);
+            if let Some(identity) = identity_after_request {
+                service_identity = Some(identity);
             }
         }
         metrics.record_result(&result, response_started.elapsed());
@@ -2064,6 +2050,7 @@ fn open_zmq_sdk_actor_session(
     Ok(ZmqSdkActorSession {
         client,
         runtime_info,
+        identity: None,
     })
 }
 
@@ -2113,9 +2100,12 @@ fn send_lxmf_zmq_actor_request(
         ZmqSdkActorPayload::RegisterIdentity(config) => {
             register_zmq_actor_identity(session, config).map(ZmqSdkActorResponse::Identity)
         }
-        ZmqSdkActorPayload::UpdateIdentity { .. } => Err(TransportError::Send(
-            "identity update was not resolved by the actor".to_string(),
-        )),
+        ZmqSdkActorPayload::UpdateIdentity {
+            display_name,
+            capabilities,
+            metadata,
+        } => update_zmq_actor_identity(session, display_name, capabilities, metadata)
+            .map(ZmqSdkActorResponse::Identity),
         ZmqSdkActorPayload::Announce => {
             send_lxmf_zmq_actor_announce(session).map(ZmqSdkActorResponse::Announce)
         }
@@ -2136,10 +2126,36 @@ fn register_zmq_actor_identity(
     session: &mut ZmqSdkActorSession,
     config: RchServiceIdentityConfig,
 ) -> Result<IdentityBundle, TransportError> {
+    let identity = announce_zmq_actor_identity(session, &config)?;
+    session.identity = Some(config);
+    Ok(identity)
+}
+
+fn update_zmq_actor_identity(
+    session: &mut ZmqSdkActorSession,
+    display_name: String,
+    capabilities: Vec<String>,
+    metadata: BTreeMap<String, JsonValue>,
+) -> Result<IdentityBundle, TransportError> {
+    let Some(mut config) = session.identity.clone() else {
+        return Err(TransportError::Send(
+            "RCH service identity is not registered".to_string(),
+        ));
+    };
+    config.display_name = display_name;
+    config.capabilities = capabilities;
+    config.metadata = metadata;
+    register_zmq_actor_identity(session, config)
+}
+
+fn announce_zmq_actor_identity(
+    session: &mut ZmqSdkActorSession,
+    config: &RchServiceIdentityConfig,
+) -> Result<IdentityBundle, TransportError> {
     let identity = LxmfSdkIdentity::identity_import(
         &session.client,
         IdentityImportRequest {
-            bundle_base64: base64::engine::general_purpose::STANDARD.encode(config.private_key),
+            bundle_base64: base64::engine::general_purpose::STANDARD.encode(&config.private_key),
             passphrase: None,
             display_name: Some(config.display_name.clone()),
             capabilities: config.capabilities.clone(),
@@ -2154,9 +2170,9 @@ fn register_zmq_actor_identity(
         &session.client,
         IdentityAnnounceRequest {
             identity: Some(IdentityRef(identity.identity.0.clone())),
-            display_name: Some(config.display_name),
-            capabilities: config.capabilities,
-            metadata: config.metadata,
+            display_name: Some(config.display_name.clone()),
+            capabilities: config.capabilities.clone(),
+            metadata: config.metadata.clone(),
             extensions: BTreeMap::new(),
         },
     )
@@ -3994,10 +4010,21 @@ mod tests {
                     } else {
                         response
                     };
-                    let rpc_response = ReticulumdRpcResponse {
-                        id: envelope.request_id,
-                        result: Some(response),
-                        error: None,
+                    let rpc_response = if let Some(error) = response.get("__rpc_error") {
+                        ReticulumdRpcResponse {
+                            id: envelope.request_id,
+                            result: None,
+                            error: Some(
+                                serde_json::from_value(error.clone())
+                                    .expect("test rpc error response"),
+                            ),
+                        }
+                    } else {
+                        ReticulumdRpcResponse {
+                            id: envelope.request_id,
+                            result: Some(response),
+                            error: None,
+                        }
                     };
                     let response_payload = encode_frame(&rpc_response).expect("encode response");
                     let mut response_socket = PushSocket::new();
@@ -5048,7 +5075,10 @@ mod tests {
             .update_identity_announce(
                 "Field RCH",
                 vec!["r3akt".to_string(), "telemetry".to_string()],
-                BTreeMap::from([("service".to_string(), serde_json::json!("rch"))]),
+                BTreeMap::from([
+                    ("service".to_string(), serde_json::json!("rch")),
+                    ("revision".to_string(), serde_json::json!(2)),
+                ]),
             )
             .expect("update identity");
         data_plane.shutdown().expect("shutdown");
@@ -5083,6 +5113,78 @@ mod tests {
             captured[6].params["capabilities"],
             serde_json::json!(["r3akt", "telemetry"])
         );
+        assert_eq!(captured[4].params["metadata"]["service"], "rch");
+        assert_eq!(captured[4].params["metadata"]["revision"], 2);
+        assert_eq!(captured[6].params["metadata"]["revision"], 2);
+    }
+
+    #[test]
+    fn zmq_data_plane_identity_update_maps_sdk_errors() {
+        let (command_endpoint, response_endpoint) = unused_zmq_endpoint_pair_v4();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let identity_result = serde_json::json!({
+            "identity": {
+                "identity": "11111111111111111111111111111111",
+                "delivery_destination": "22222222222222222222222222222222",
+                "public_key": "public-key",
+                "display_name": "RCH",
+                "capabilities": ["r3akt"],
+                "metadata": {"service": "rch"},
+                "extensions": {}
+            }
+        });
+        let server = spawn_zmq_sequence_server(
+            command_endpoint.clone(),
+            vec![
+                serde_json::json!({"runtime_id": "runtime-rch-zmq"}),
+                identity_result,
+                serde_json::json!({"accepted": true}),
+                serde_json::json!({"accepted": true}),
+                serde_json::json!({
+                    "__rpc_error": {
+                        "code": "SDK_IDENTITY_ANNOUNCE_FAILED",
+                        "message": "identity import rejected",
+                        "machine_code": "SDK_IDENTITY_ANNOUNCE_FAILED",
+                        "category": "identity",
+                        "retryable": false
+                    }
+                }),
+            ],
+            Arc::clone(&captured),
+        );
+        let data_plane =
+            ZmqDataPlane::new(command_endpoint, response_endpoint).expect("data plane");
+        data_plane
+            .register_identity(RchServiceIdentityConfig {
+                private_key: vec![7_u8; 64],
+                display_name: "RCH".to_string(),
+                capabilities: vec!["r3akt".to_string()],
+                metadata: BTreeMap::new(),
+            })
+            .expect("register identity");
+        let error = data_plane
+            .update_identity_announce("Field RCH", vec!["r3akt".to_string()], BTreeMap::new())
+            .expect_err("identity update error");
+        data_plane.shutdown().expect("shutdown");
+        drop(data_plane);
+        server.join().expect("server joined");
+
+        match error {
+            TransportError::Sdk {
+                code,
+                category,
+                retryable,
+                message,
+            } => {
+                assert_eq!(code, "SDK_IDENTITY_ANNOUNCE_FAILED");
+                assert_eq!(category.as_deref(), Some("Internal"));
+                assert!(!retryable);
+                assert_eq!(message, "identity import rejected");
+            }
+            other => panic!("expected SDK error, got {other:?}"),
+        }
+        let captured = captured.lock().expect("captured requests");
+        assert_eq!(captured[4].method, "sdk_identity_import_v2");
     }
 
     #[test]
