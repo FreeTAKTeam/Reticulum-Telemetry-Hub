@@ -40,10 +40,12 @@
 mod auth;
 mod rem_team_routing;
 mod reticulumd_inbound;
+mod topic_diagnostics;
 
 use rem_team_routing::{
     fanout_mission_sync_response_to_team, send_mission_sync_response_to_source,
 };
+use topic_diagnostics::{apply_config_text, topic_subscription_diagnostics};
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::future::pending;
@@ -248,6 +250,7 @@ pub struct AppState {
     lxmf_zmq_response_endpoint: Option<Arc<String>>,
     lxmf_zmq_data_plane: Option<Arc<ZmqDataPlane>>,
     rch_service_identity_config: Option<Arc<RchServiceIdentityConfig>>,
+    identity_announce_update_error: Arc<RwLock<Option<String>>>,
     rch_source_assertion: Option<Arc<String>>,
     runtime_control: Arc<RwLock<RuntimeControlState>>,
     managed_reticulumd: Arc<RwLock<ManagedReticulumdState>>,
@@ -523,6 +526,7 @@ impl Default for AppState {
             lxmf_zmq_response_endpoint: None,
             lxmf_zmq_data_plane: None,
             rch_service_identity_config: None,
+            identity_announce_update_error: Arc::default(),
             rch_source_assertion: None,
             runtime_control: Arc::default(),
             managed_reticulumd: Arc::default(),
@@ -10305,6 +10309,7 @@ fn runtime_diagnostics_payload(state: &AppState) -> Result<Value, ApiError> {
         .clone();
     let outbound_delivery = outbound_delivery_diagnostics_snapshot(state)?;
     let runtime_metrics = runtime_metrics_compat_payload(state, &outbound_delivery);
+    let topic_diagnostics = topic_subscription_diagnostics(state)?;
     Ok(json!({
         "runtime": "rust",
         "status": control.status,
@@ -10316,6 +10321,14 @@ fn runtime_diagnostics_payload(state: &AppState) -> Result<Value, ApiError> {
         "shutdown_requested": control.shutdown_requested,
         "reticulumd_rpc_configured": state.reticulumd_rpc_endpoint.is_some(),
         "reticulumd_source_configured": state.reticulumd_source.is_some(),
+        "topic_count": topic_diagnostics["topic_count"].clone(),
+        "subscriber_count": topic_diagnostics["subscriber_count"].clone(),
+        "orphan_subscriber_count": topic_diagnostics["orphan_subscriber_count"].clone(),
+        "duplicate_normalized_subscription_count": topic_diagnostics["duplicate_normalized_subscription_count"].clone(),
+        "missing_subscriber_identity_count": topic_diagnostics["missing_subscriber_identity_count"].clone(),
+        "identity_announce_update_supported": topic_diagnostics["identity_announce_update_supported"].clone(),
+        "last_identity_announce_update_error": topic_diagnostics["last_identity_announce_update_error"].clone(),
+        "topics": topic_diagnostics,
         "services": runtime_services_payload(&state),
         "outbound_delivery": outbound_delivery,
         "lxmf_sdk": lxmf_sdk_diagnostics_payload(state, &outbound_delivery)?,
@@ -26137,52 +26150,6 @@ fn validate_ini_text(config_text: &str) -> Vec<String> {
     errors
 }
 
-async fn apply_config_text(
-    State(state): State<AppState>,
-    body: String,
-) -> Result<Json<Value>, ApiError> {
-    let display_name = config_text_section_value(&body, "hub", &["display_name"])
-        .unwrap_or_else(|| "RCH".to_string());
-    let response = apply_config_file(state.config_path.clone(), body, ConfigFileKind::Hub)?;
-    if let Some(data_plane) = state.lxmf_zmq_data_plane.clone() {
-        let identity = tokio::task::spawn_blocking(move || {
-            data_plane.update_identity_announce(
-                display_name,
-                vec![
-                    "r3akt".to_string(),
-                    "emergencymessages".to_string(),
-                    "telemetry".to_string(),
-                ],
-                BTreeMap::from([("service".to_string(), Value::String("rch".to_string()))]),
-            )
-        })
-        .await
-        .map_err(|error| {
-            ApiError::ServiceUnavailable(format!(
-                "RCH identity announce update task failed: {error}"
-            ))
-        })?
-        .map_err(|error| {
-            ApiError::ServiceUnavailable(format!("RCH identity announce update failed: {error}"))
-        })?;
-        let expected_source = state
-            .reticulumd_source
-            .as_deref()
-            .map(String::as_str)
-            .unwrap_or("");
-        if identity
-            .delivery_destination
-            .as_deref()
-            .is_none_or(|destination| !destination.eq_ignore_ascii_case(expected_source))
-        {
-            return Err(ApiError::ServiceUnavailable(
-                "RCH identity update returned an unexpected delivery destination".to_string(),
-            ));
-        }
-    }
-    Ok(response)
-}
-
 async fn apply_reticulum_config_text(
     State(state): State<AppState>,
     body: String,
@@ -27129,6 +27096,14 @@ async fn delete_topic(
         .ok_or_else(|| ApiError::NotFound(format!("Topic not found: {topic_id}")))?;
     drop(topics);
     delete_topic_row(&state, &topic.topic_id)?;
+    let mut subscribers = state
+        .subscribers
+        .write()
+        .map_err(|error| ApiError::Internal(error.to_string()))?;
+    subscribers.retain(|_, subscriber| {
+        normalize_topic_id(Some(&subscriber.topic_id)).as_deref() != Some(topic.topic_id.as_str())
+    });
+    drop(subscribers);
     clear_attachment_topic_links(&state, &topic.topic_id)?;
     Ok(Json(topic))
 }
@@ -34836,8 +34811,7 @@ mod tests {
             .expect("body")
             .to_bytes();
         let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
-        assert_eq!(payload.as_array().expect("subscribers").len(), 1);
-        assert_eq!(payload[0]["TopicID"], "ops");
+        assert!(payload.as_array().expect("subscribers").is_empty());
     }
 
     #[tokio::test]
@@ -46516,6 +46490,14 @@ mod tests {
             assert_eq!(payload["shutdown_requested"], false);
             assert_eq!(payload["reticulumd_rpc_configured"], false);
             assert_eq!(payload["reticulumd_source_configured"], false);
+            assert_eq!(payload["topic_count"], 0);
+            assert_eq!(payload["subscriber_count"], 0);
+            assert_eq!(payload["orphan_subscriber_count"], 0);
+            assert_eq!(payload["duplicate_normalized_subscription_count"], 0);
+            assert_eq!(payload["missing_subscriber_identity_count"], 0);
+            assert_eq!(payload["identity_announce_update_supported"], false);
+            assert!(payload["last_identity_announce_update_error"].is_null());
+            assert_eq!(payload["topics"]["count"], 0);
             let services = payload["services"].as_array().expect("services");
             assert_eq!(services.len(), 4);
             assert_eq!(
@@ -46889,7 +46871,7 @@ mod tests {
         let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
         assert_eq!(payload["persistence"]["configured"], true);
         assert_eq!(payload["persistence"]["backend"], "sqlite");
-        assert_eq!(payload["persistence"]["schema_version"], "2");
+        assert_eq!(payload["persistence"]["schema_version"], "3");
         assert!(
             payload["persistence"]["path"]
                 .as_str()
@@ -58129,4 +58111,6 @@ mod tests {
 
         let _cleanup = std::fs::remove_dir_all(test_dir);
     }
+
+    include!("topic_diagnostics_tests.rs");
 }
