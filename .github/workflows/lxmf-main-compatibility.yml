@@ -37,10 +37,10 @@ jobs:
           New-Item -ItemType Directory -Force .cargo | Out-Null
           @'
           [patch.crates-io]
-          lxmf-wire = { path = "../../LXMF-rs/crates/libs/lxmf-core" }
-          lxmf-sdk = { path = "../../LXMF-rs/crates/libs/lxmf-sdk" }
-          reticulum-rs-rpc = { path = "../../LXMF-rs/crates/libs/rns-rpc" }
-          reticulum-rs-core = { path = "../../LXMF-rs/crates/libs/rns-core" }
+          lxmf-wire = { path = "../LXMF-rs/crates/libs/lxmf-core" }
+          lxmf-sdk = { path = "../LXMF-rs/crates/libs/lxmf-sdk" }
+          reticulum-rs-rpc = { path = "../LXMF-rs/crates/libs/rns-rpc" }
+          reticulum-rs-core = { path = "../LXMF-rs/crates/libs/rns-core" }
           '@ | Set-Content -LiteralPath .cargo/config.toml -Encoding utf8
           $transportManifest = Get-Content -LiteralPath crates/r3akt-transport-rns/Cargo.toml -Raw
           $transportManifest = $transportManifest -replace 'version = "=0\.8\.0"', 'version = "*"'
