@@ -5,11 +5,11 @@ It is intentionally stricter than a green CI badge: the initial Rust alpha is
 not release-ready until every required local, CI, server-package, ZeroMQ, REM,
 and Reticulum gate is either passed or recorded as an explicit alpha risk.
 
-Audit date: 2026-06-22; preview.9 supplement: 2026-07-19
+Audit date: 2026-06-22; preview.10 supplement: 2026-08-13
 
-The table retains historical evidence. Current preview.9 findings, validation,
+The table retains historical evidence. Current preview.10 findings, validation,
 limitations, and artifact identity are tracked in
-[`stabilization-v3.0.0-preview.9.md`](stabilization-v3.0.0-preview.9.md).
+[`stabilization-v3.0.0-preview.10.md`](stabilization-v3.0.0-preview.10.md).
 
 ## Objective
 

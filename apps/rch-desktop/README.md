@@ -13,7 +13,7 @@ npm --prefix apps/rch-desktop install
 npm --prefix apps/rch-desktop run build
 ```
 
-The sidecar preparation step builds LXMF `0.9.5` `reticulumd`,
+The sidecar preparation step builds LXMF `0.9.9` `reticulumd`,
 `r3akt-rch-server`, and `r3akt-tak-service`, then copies them into `src-tauri/binaries/` with the
 host target-triple suffix required by Tauri.
 

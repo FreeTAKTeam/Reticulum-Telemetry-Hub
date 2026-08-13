@@ -84,9 +84,9 @@ capabilities.
 
 ## Current Validation Snapshot
 
-The dated evidence below is historical. The current preview.9 evidence and
+The dated evidence below is historical. The current preview.10 evidence and
 exact artifact metadata are maintained in
-[`stabilization-v3.0.0-preview.9.md`](stabilization-v3.0.0-preview.9.md).
+[`stabilization-v3.0.0-preview.10.md`](stabilization-v3.0.0-preview.10.md).
 
 Validated during the root Rust import and refreshed on 2026-05-11:
 
@@ -196,7 +196,7 @@ Release blockers cleared in the latest parity pass:
 - ZeroMQ is the permanent LXMF data plane for send, ordered batch acceptance,
   delivery status, and event traffic. RPC is an optional administration
   channel and must not be called from HTTP delivery or fanout hot paths.
-- Production dependencies use released LXMF `0.9.5`. The matching
+- Production dependencies use released LXMF `0.9.9`. The matching
   ZMQ-capable `reticulumd` is bundled and described by
   `config/lxmf-runtime-baseline.json`; sibling `main` is checked separately by
   the scheduled compatibility workflow.
