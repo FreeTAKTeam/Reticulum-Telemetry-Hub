@@ -1,7 +1,7 @@
 {
   "name": "rch-desktop-tauri",
   "private": true,
-  "version": "3.0.0-preview.9",
+  "version": "3.0.0-preview.10",
   "type": "module",
   "scripts": {
     "build": "npm --prefix ../../ui run build && npm run prepare:sidecar && cargo build --release --locked --manifest-path src-tauri/Cargo.toml && tauri bundle --ci",

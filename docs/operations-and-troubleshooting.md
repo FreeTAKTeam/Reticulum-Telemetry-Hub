@@ -112,7 +112,7 @@ RCH_RETICULUMD_BINARY=/absolute/path/to/reticulumd \
 npm --prefix apps/rch-desktop run build
 ```
 
-The path must name a trusted LXMF 0.9.5 binary built with
+The path must name a trusted LXMF 0.9.9 binary built with
 `zmq-pipeline-rpc`. Hosted release jobs do not use this override: they build
 the pinned LXMF commit in a clean checkout.
 

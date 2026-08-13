@@ -6,7 +6,7 @@ on:
       release_version:
         description: "Version label to embed in manually built artifacts"
         required: false
-        default: "v3.0.0-preview.9"
+        default: "v3.0.0-preview.10"
   release:
     types: [published]
   push:
@@ -29,7 +29,7 @@ permissions:
   contents: write
 
 env:
-  LXMF_REF: d61ed1171d07720e5cfba3d3b0a9c83496732221
+  LXMF_REF: 51fd3beebdace78d6c7f38748c6bcfe452032559
 
 jobs:
   server-package:

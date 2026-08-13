@@ -1,6 +1,6 @@
 [package]
 name = "rch-desktop"
-version = "3.0.0-preview.9"
+version = "3.0.0-preview.10"
 edition = "2024"
 rust-version = "1.88"
 license = "EPL-2.0"

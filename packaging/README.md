@@ -3,7 +3,7 @@
 The Rust packaging line now has two release package shapes:
 
 - Server package: deployable `r3akt-rch-server` binary, `r3akt-tak-service`
-  binary, checksum-recorded LXMF `0.9.5` `reticulumd` binary with ZeroMQ
+  binary, checksum-recorded LXMF `0.9.9` `reticulumd` binary with ZeroMQ
   support, mandatory ZeroMQ southbound configuration, shared UI bundle, service
   helper files, config templates, and checksums. Current release CI builds
   Windows x64, macOS x64, macOS arm64, Linux AMD64, and Linux Raspberry Pi 64
@@ -21,9 +21,9 @@ The server-only alpha gate remains `scripts/release-readiness.ps1
 shape: manual workflow artifacts on `workflow_dispatch` and file attachment
 when a GitHub release is published. Server package names include the resolved
 release version, for example
-`rch-rust-full-windows-x64-v3.0.0-preview.9.zip`; the same version, Git ref,
+`rch-rust-full-windows-x64-v3.0.0-preview.10.zip`; the same version, Git ref,
 and commit SHA are written into `release-manifest.json` inside the archive.
-Manual workflow runs default to `v3.0.0-preview.9` and can override that label
+Manual workflow runs default to `v3.0.0-preview.10` and can override that label
 with the `release_version` input. While `main` remains the default branch,
 GitHub does not expose `workflow_dispatch` for workflows that only exist on
 `rust-next`, so the release workflow also runs on relevant `rust-next` pushes
@@ -37,11 +37,11 @@ passed on commit `8dc69773af38ced251138c007c6f0bdc9543ea02`. It uploaded
 artifacts matched their SHA-256 sidecars.
 
 Draft notes for the latest Rust preview are in
-`docs/release-notes-v3.0.0-preview.9.md`.
+`docs/release-notes-v3.0.0-preview.10.md`.
 
 Local desktop builds normally compile `reticulumd` from the sibling
 `LXMF-rs` checkout. Set `RCH_RETICULUMD_BINARY` to an absolute, validated
-LXMF 0.9.5 `reticulumd` path when that checkout is intentionally dirty; hosted
+LXMF 0.9.9 `reticulumd` path when that checkout is intentionally dirty; hosted
 packages always build the pinned clean LXMF commit.
 
 Pull request quality control is handled by
